@@ -93,6 +93,9 @@ class DxfPainter extends CustomPainter {
         case 'POINT':
           _drawPoint(canvas, entity, transformPoint, paint);
           break;
+        case 'HATCH':
+          _drawHatch(canvas, entity, transformPoint, paint, scale);
+          break;
       }
     }
   }
@@ -460,6 +463,257 @@ class DxfPainter extends CustomPainter {
 
     final position = transform(x, y);
     canvas.drawCircle(position, 2.0, paint..style = PaintingStyle.fill);
+  }
+
+  void _drawHatch(
+    Canvas canvas,
+    Map<String, dynamic> entity,
+    Offset Function(double, double) transform,
+    Paint paint,
+    double scale,
+  ) {
+    final boundaries = entity['boundaries'] as List?;
+    if (boundaries == null || boundaries.isEmpty) return;
+
+    final isSolid = entity['solid'] as bool? ?? false;
+    final patternLines = entity['patternLines'] as List? ?? [];
+    final patternScale = (entity['patternScale'] as double?) ?? 1.0;
+
+    final strokePaint = Paint()
+      ..color = paint.color.withValues(alpha: 0.5)
+      ..strokeWidth = 0.5
+      ..style = PaintingStyle.stroke;
+
+    // 모든 경계를 하나의 combinedPath에 합침
+    Path? combinedPath;
+    for (final boundary in boundaries) {
+      final segs = boundary as List;
+      if (segs.isEmpty) continue;
+
+      final path = _buildHatchPath(segs, transform, scale);
+      if (path == null) continue;
+
+      final pathBounds = path.getBounds();
+      if (pathBounds.width > 10000 || pathBounds.height > 10000) continue;
+
+      if (combinedPath == null) {
+        combinedPath = path;
+      } else {
+        combinedPath.addPath(path, Offset.zero);
+      }
+    }
+
+    if (combinedPath == null) return;
+
+    if (isSolid || patternLines.isEmpty) {
+      // 솔리드 해치: 채우기 + 경계선
+      final fillPaint = Paint()
+        ..color = paint.color.withValues(alpha: 0.3)
+        ..style = PaintingStyle.fill;
+      canvas.drawPath(combinedPath, fillPaint);
+      canvas.drawPath(combinedPath, strokePaint);
+    } else {
+      // 패턴 해치: 반투명 배경 + 패턴 라인
+      final bgPaint = Paint()
+        ..color = paint.color.withValues(alpha: 0.1)
+        ..style = PaintingStyle.fill;
+      canvas.drawPath(combinedPath, bgPaint);
+
+      canvas.save();
+      canvas.clipPath(combinedPath);
+
+      final patternPaint = Paint()
+        ..color = paint.color.withValues(alpha: 0.7)
+        ..strokeWidth = 0.5
+        ..style = PaintingStyle.stroke;
+
+      final clipBounds = combinedPath.getBounds();
+
+      for (final pl in patternLines) {
+        final angle = (pl['angle'] as double?) ?? 0;
+        final ox = (pl['ox'] as double?) ?? 0;
+        final oy = (pl['oy'] as double?) ?? 0;
+        final dx = (pl['dx'] as double?) ?? 0;
+        final dy = (pl['dy'] as double?) ?? 0;
+        final dashes = (pl['dashes'] as List?)?.cast<double>() ?? [];
+
+        _drawHatchPatternLine(
+          canvas, transform, scale, patternPaint,
+          clipBounds, angle, ox, oy, dx, dy, dashes, patternScale,
+        );
+      }
+
+      canvas.restore();
+      // 경계선
+      canvas.drawPath(combinedPath, strokePaint);
+    }
+  }
+
+  /// 해치 패턴 라인 한 세트를 그리기
+  /// angle: 라인 방향(도), ox/oy: 원점(DXF), dx/dy: 반복 오프셋(DXF), dashes: 대시 패턴(DXF 단위)
+  void _drawHatchPatternLine(
+    Canvas canvas,
+    Offset Function(double, double) transform,
+    double scale,
+    Paint paint,
+    Rect clipBounds,
+    double angle,
+    double ox, double oy,
+    double dx, double dy,
+    List<double> dashes,
+    double patternScale,
+  ) {
+    // DXF 단위의 반복 간격 (dy가 라인 간 수직 간격)
+    final spacing = dy.abs() * patternScale;
+    if (spacing < 1e-6) return;
+
+    // 화면 좌표 기준 간격
+    final screenSpacing = spacing * scale;
+    // 간격이 너무 작으면 그리지 않음 (2px 미만이면 의미없음)
+    if (screenSpacing < 2.0) return;
+
+    // 클립 영역의 화면 크기
+    final clipW = clipBounds.width;
+    final clipH = clipBounds.height;
+    final diagScreen = sqrt(clipW * clipW + clipH * clipH);
+
+    // 필요한 라인 수 계산 — 제한 초과 시 간격 늘려서 그리기
+    var actualSpacing = screenSpacing;
+    var lineCount = (diagScreen / actualSpacing).ceil() + 2;
+    // 라인이 너무 많으면 간격을 늘려서 최대 150개로 제한
+    if (lineCount > 150) {
+      actualSpacing = diagScreen / 150.0;
+      lineCount = 150;
+    }
+
+    // 화면 좌표에서 직접 라인 그리기 (Y축 반전 고려)
+    final angleRad = angle * pi / 180.0;
+    final screenAngleRad = -angleRad;
+    final sDirX = cos(screenAngleRad);
+    final sDirY = sin(screenAngleRad);
+    final sPerpX = -sDirY;
+    final sPerpY = sDirX;
+
+    final centerX = clipBounds.center.dx;
+    final centerY = clipBounds.center.dy;
+    final halfLineLen = diagScreen;
+
+    // 대시는 간격이 충분할 때만
+    final screenDashes = dashes.map((d) => d * patternScale * scale).toList();
+    final hasDash = screenDashes.isNotEmpty
+        && screenDashes.any((d) => d.abs() > 0.5)
+        && lineCount <= 100;
+
+    for (int n = -lineCount; n <= lineCount; n++) {
+      final cx = centerX + sPerpX * actualSpacing * n;
+      final cy = centerY + sPerpY * actualSpacing * n;
+
+      final p1 = Offset(cx - sDirX * halfLineLen, cy - sDirY * halfLineLen);
+      final p2 = Offset(cx + sDirX * halfLineLen, cy + sDirY * halfLineLen);
+
+      if (hasDash) {
+        _drawDashedLine(canvas, p1, p2, screenDashes, paint);
+      } else {
+        canvas.drawLine(p1, p2, paint);
+      }
+    }
+  }
+
+  /// 대시 패턴 라인 그리기 (양수=그리기, 음수=빈칸, 0=점)
+  void _drawDashedLine(Canvas canvas, Offset p1, Offset p2, List<double> dashes, Paint paint) {
+    final dx = p2.dx - p1.dx;
+    final dy = p2.dy - p1.dy;
+    final totalLen = sqrt(dx * dx + dy * dy);
+    if (totalLen < 1.0) return;
+
+    final ux = dx / totalLen;
+    final uy = dy / totalLen;
+
+    double t = 0;
+    int dashIdx = 0;
+    while (t < totalLen) {
+      final dashLen = dashes[dashIdx % dashes.length].abs();
+      final isDraw = dashes[dashIdx % dashes.length] >= 0;
+      final segEnd = (t + dashLen).clamp(0.0, totalLen);
+
+      if (dashLen < 0.01) {
+        // 점 (dot)
+        final px = p1.dx + ux * t;
+        final py = p1.dy + uy * t;
+        canvas.drawCircle(Offset(px, py), 0.5, paint..style = PaintingStyle.fill);
+        paint.style = PaintingStyle.stroke;
+      } else if (isDraw) {
+        final sx = p1.dx + ux * t;
+        final sy = p1.dy + uy * t;
+        final ex = p1.dx + ux * segEnd;
+        final ey = p1.dy + uy * segEnd;
+        canvas.drawLine(Offset(sx, sy), Offset(ex, ey), paint);
+      }
+
+      t = segEnd;
+      dashIdx++;
+    }
+  }
+
+  Path? _buildHatchPath(
+    List segs,
+    Offset Function(double, double) transform,
+    double scale,
+  ) {
+    if (segs.isEmpty) return null;
+    final path = Path();
+    bool first = true;
+
+    for (final seg in segs) {
+      final edge = seg['edge'] as String;
+
+      if (edge == 'line') {
+        final x1 = (seg['x1'] as double?) ?? 0;
+        final y1 = (seg['y1'] as double?) ?? 0;
+        final x2 = (seg['x2'] as double?) ?? 0;
+        final y2 = (seg['y2'] as double?) ?? 0;
+        final p1 = transform(x1, y1);
+        final p2 = transform(x2, y2);
+        if (first) { path.moveTo(p1.dx, p1.dy); first = false; }
+        path.lineTo(p2.dx, p2.dy);
+      } else if (edge == 'bulge') {
+        final x1 = (seg['x1'] as double?) ?? 0;
+        final y1 = (seg['y1'] as double?) ?? 0;
+        final x2 = (seg['x2'] as double?) ?? 0;
+        final y2 = (seg['y2'] as double?) ?? 0;
+        final bulge = (seg['bulge'] as double?) ?? 0;
+        final p1 = transform(x1, y1);
+        if (first) { path.moveTo(p1.dx, p1.dy); first = false; }
+        _drawBulgeSegment(path, x1, y1, x2, y2, bulge, transform);
+      } else if (edge == 'arc') {
+        final cx = (seg['cx'] as double?) ?? 0;
+        final cy = (seg['cy'] as double?) ?? 0;
+        final radius = (seg['radius'] as double?) ?? 0;
+        final sa = (seg['startAngle'] as double?) ?? 0;
+        final ea = (seg['endAngle'] as double?) ?? 0;
+        final ccw = (seg['ccw'] as bool?) ?? true;
+
+        final scaledR = radius * scale;
+        final center = transform(cx, cy);
+
+        // 호 시작점으로 이동
+        final saRad = -sa * pi / 180.0;
+        final startPt = Offset(center.dx + scaledR * cos(saRad), center.dy + scaledR * sin(saRad));
+        if (first) { path.moveTo(startPt.dx, startPt.dy); first = false; }
+        else { path.lineTo(startPt.dx, startPt.dy); }
+
+        // sweep 계산
+        double includedDeg = ccw ? (ea - sa) : (sa - ea);
+        if (includedDeg <= 0) includedDeg += 360.0;
+        final sweepRad = ccw ? -(includedDeg * pi / 180.0) : (includedDeg * pi / 180.0);
+
+        final rect = Rect.fromCircle(center: center, radius: scaledR);
+        path.arcTo(rect, saRad, sweepRad, false);
+      }
+    }
+
+    path.close();
+    return path;
   }
 
   @override

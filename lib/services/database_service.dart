@@ -1,6 +1,7 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/station_data.dart';
+import '../models/measurement_session.dart';
 
 /// SQLite 데이터베이스 서비스
 /// 측점 데이터, 프로젝트 설정, DXF 정보 관리
@@ -16,18 +17,23 @@ class DatabaseService {
 
   static Database? _database;
   static const String _databaseName = 'longitudinal_viewer.db';
-  static const int _databaseVersion = 1;
+  static const int _databaseVersion = 8;
 
   // 테이블 이름
   static const String tableProjects = 'projects';
   static const String tableStations = 'stations';
   static const String tableDxfFiles = 'dxf_files';
+  static const String tableMeasurementSessions = 'measurement_sessions';
+  static const String tableMeasurementRecords = 'measurement_records';
+  static const String tableStationRanges = 'station_ranges';
+  static const String tableFoundationResults = 'foundation_results';
 
   /// 데이터베이스 인스턴스 가져오기 (싱글톤)
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDatabase();
-    return _database!;
+    final db = await _initDatabase();
+    _database = db;
+    return db;
   }
 
   /// 데이터베이스 초기화
@@ -67,6 +73,15 @@ class DatabaseService {
         distance REAL,
         gh REAL,
         ip REAL,
+        interval_distance REAL,
+        deepest_bed_level REAL,
+        planned_flood_level REAL,
+        left_bank_height REAL,
+        right_bank_height REAL,
+        planned_bank_left REAL,
+        planned_bank_right REAL,
+        roadbed_left REAL,
+        roadbed_right REAL,
         gh_d REAL,
         gh1 REAL,
         gh2 REAL,
@@ -81,6 +96,7 @@ class DatabaseService {
         cut_fill_status TEXT,
         is_interpolated INTEGER DEFAULT 0,
         last_modified TEXT,
+        memo TEXT,
         FOREIGN KEY (project_id) REFERENCES $tableProjects (id) ON DELETE CASCADE,
         UNIQUE(project_id, no)
       )
@@ -99,20 +115,192 @@ class DatabaseService {
       )
     ''');
 
+    // 측량 세션 테이블
+    await db.execute('''
+      CREATE TABLE $tableMeasurementSessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        ih REAL,
+        plan_level_column TEXT,
+        created_at TEXT NOT NULL,
+        last_modified TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES $tableProjects (id) ON DELETE CASCADE
+      )
+    ''');
+
+    // 측량 기록 테이블
+    await db.execute('''
+      CREATE TABLE $tableMeasurementRecords (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        station_no TEXT NOT NULL,
+        ih REAL,
+        plan_level_column TEXT,
+        target_reading REAL,
+        actual_reading REAL,
+        cut_fill REAL,
+        cut_fill_status TEXT,
+        measured_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES $tableMeasurementSessions (id) ON DELETE CASCADE,
+        UNIQUE(session_id, station_no)
+      )
+    ''');
+
+    // 저장된 측점 범위 테이블
+    await db.execute('''
+      CREATE TABLE $tableStationRanges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        start_station_no TEXT NOT NULL,
+        end_station_no TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES $tableProjects (id) ON DELETE CASCADE
+      )
+    ''');
+
+    // 기초레벨 결과 테이블
+    await db.execute('''
+      CREATE TABLE $tableFoundationResults (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        start_station_no TEXT NOT NULL,
+        end_station_no TEXT NOT NULL,
+        side TEXT NOT NULL,
+        interpolation INTEGER NOT NULL,
+        excavation_cm INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES $tableProjects (id) ON DELETE CASCADE
+      )
+    ''');
+
     // 인덱스 생성 (성능 최적화)
     await db.execute(
         'CREATE INDEX idx_stations_project_id ON $tableStations(project_id)');
     await db.execute('CREATE INDEX idx_stations_no ON $tableStations(no)');
     await db
         .execute('CREATE INDEX idx_stations_distance ON $tableStations(distance)');
+    await db.execute(
+        'CREATE INDEX idx_msessions_project_id ON $tableMeasurementSessions(project_id)');
+    await db.execute(
+        'CREATE INDEX idx_mrecords_session_id ON $tableMeasurementRecords(session_id)');
+    await db.execute(
+        'CREATE INDEX idx_sranges_project_id ON $tableStationRanges(project_id)');
+    await db.execute(
+        'CREATE INDEX idx_foundation_project_id ON $tableFoundationResults(project_id)');
   }
 
   /// 데이터베이스 업그레이드
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // 버전별 마이그레이션 로직
     if (oldVersion < 2) {
-      // 예: 새로운 컬럼 추가
-      // await db.execute('ALTER TABLE $tableStations ADD COLUMN new_column TEXT');
+      final newColumns = [
+        'interval_distance REAL',
+        'deepest_bed_level REAL',
+        'planned_flood_level REAL',
+        'left_bank_height REAL',
+        'right_bank_height REAL',
+        'planned_bank_left REAL',
+        'planned_bank_right REAL',
+        'roadbed_left REAL',
+        'roadbed_right REAL',
+      ];
+      for (final col in newColumns) {
+        try {
+          await db.execute('ALTER TABLE $tableStations ADD COLUMN $col');
+        } catch (_) {} // 이미 존재하면 무시
+      }
+    }
+    if (oldVersion < 3) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $tableMeasurementSessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          ih REAL,
+          plan_level_column TEXT,
+          created_at TEXT NOT NULL,
+          last_modified TEXT NOT NULL,
+          FOREIGN KEY (project_id) REFERENCES $tableProjects (id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $tableMeasurementRecords (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id INTEGER NOT NULL,
+          station_no TEXT NOT NULL,
+          target_reading REAL,
+          actual_reading REAL,
+          cut_fill REAL,
+          cut_fill_status TEXT,
+          measured_at TEXT NOT NULL,
+          FOREIGN KEY (session_id) REFERENCES $tableMeasurementSessions (id) ON DELETE CASCADE,
+          UNIQUE(session_id, station_no)
+        )
+      ''');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_msessions_project_id ON $tableMeasurementSessions(project_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_mrecords_session_id ON $tableMeasurementRecords(session_id)');
+    }
+    if (oldVersion < 4) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $tableStationRanges (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          start_station_no TEXT NOT NULL,
+          end_station_no TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (project_id) REFERENCES $tableProjects (id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_sranges_project_id ON $tableStationRanges(project_id)');
+    }
+    if (oldVersion < 5) {
+      // measurement_records에 ih, plan_level_column 컬럼 추가
+      try {
+        await db.execute('ALTER TABLE $tableMeasurementRecords ADD COLUMN ih REAL');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE $tableMeasurementRecords ADD COLUMN plan_level_column TEXT');
+      } catch (_) {}
+    }
+
+    if (oldVersion < 6) {
+      try {
+        await db.execute('ALTER TABLE $tableStations ADD COLUMN memo TEXT');
+      } catch (_) {}
+    }
+
+    if (oldVersion < 7) {
+      // 통합 CSV 데이터 반영을 위해 기존 측점 데이터 클리어
+      // 앱 시작 시 CSV에서 새로 로드됨
+      await db.delete(tableStations);
+      await db.delete(tableProjects);
+    }
+
+    if (oldVersion < 8) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $tableFoundationResults (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          label TEXT NOT NULL,
+          start_station_no TEXT NOT NULL,
+          end_station_no TEXT NOT NULL,
+          side TEXT NOT NULL,
+          interpolation INTEGER NOT NULL,
+          excavation_cm INTEGER NOT NULL,
+          data TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (project_id) REFERENCES $tableProjects (id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_foundation_project_id ON $tableFoundationResults(project_id)');
     }
   }
 
@@ -195,27 +383,7 @@ class DatabaseService {
   Future<int> upsertStation(int projectId, StationData station) async {
     final db = await database;
 
-    final data = {
-      'project_id': projectId,
-      'no': station.no,
-      'distance': station.distance,
-      'gh': station.gh,
-      'ip': station.ip,
-      'gh_d': station.ghD,
-      'gh1': station.gh1,
-      'gh2': station.gh2,
-      'gh3': station.gh3,
-      'gh4': station.gh4,
-      'gh5': station.gh5,
-      'x': station.x,
-      'y': station.y,
-      'actual_reading': station.actualReading,
-      'target_reading': station.targetReading,
-      'cut_fill': station.cutFill,
-      'cut_fill_status': station.cutFillStatus,
-      'is_interpolated': station.isInterpolated ? 1 : 0,
-      'last_modified': DateTime.now().toIso8601String(),
-    };
+    final data = _stationToDb(projectId, station);
 
     return await db.insert(
       tableStations,
@@ -230,27 +398,7 @@ class DatabaseService {
     final batch = db.batch();
 
     for (final station in stations) {
-      final data = {
-        'project_id': projectId,
-        'no': station.no,
-        'distance': station.distance,
-        'gh': station.gh,
-        'ip': station.ip,
-        'gh_d': station.ghD,
-        'gh1': station.gh1,
-        'gh2': station.gh2,
-        'gh3': station.gh3,
-        'gh4': station.gh4,
-        'gh5': station.gh5,
-        'x': station.x,
-        'y': station.y,
-        'actual_reading': station.actualReading,
-        'target_reading': station.targetReading,
-        'cut_fill': station.cutFill,
-        'cut_fill_status': station.cutFillStatus,
-        'is_interpolated': station.isInterpolated ? 1 : 0,
-        'last_modified': DateTime.now().toIso8601String(),
-      };
+      final data = _stationToDb(projectId, station);
 
       batch.insert(
         tableStations,
@@ -333,13 +481,57 @@ class DatabaseService {
 
   // ==================== 헬퍼 메서드 ====================
 
+  /// StationData를 DB 행으로 변환
+  Map<String, dynamic> _stationToDb(int projectId, StationData station) {
+    return {
+      'project_id': projectId,
+      'no': station.no,
+      'interval_distance': station.intervalDistance,
+      'distance': station.distance,
+      'gh': station.gh,
+      'ip': station.ip,
+      'deepest_bed_level': station.deepestBedLevel,
+      'planned_flood_level': station.plannedFloodLevel,
+      'left_bank_height': station.leftBankHeight,
+      'right_bank_height': station.rightBankHeight,
+      'planned_bank_left': station.plannedBankLeft,
+      'planned_bank_right': station.plannedBankRight,
+      'roadbed_left': station.roadbedLeft,
+      'roadbed_right': station.roadbedRight,
+      'gh_d': station.ghD,
+      'gh1': station.gh1,
+      'gh2': station.gh2,
+      'gh3': station.gh3,
+      'gh4': station.gh4,
+      'gh5': station.gh5,
+      'x': station.x,
+      'y': station.y,
+      'actual_reading': station.actualReading,
+      'target_reading': station.targetReading,
+      'cut_fill': station.cutFill,
+      'cut_fill_status': station.cutFillStatus,
+      'is_interpolated': station.isInterpolated ? 1 : 0,
+      'last_modified': DateTime.now().toIso8601String(),
+      'memo': station.memo,
+    };
+  }
+
   /// DB 행을 StationData로 변환
   StationData _stationFromDb(Map<String, dynamic> row) {
     return StationData(
       no: row['no'] as String,
+      intervalDistance: row['interval_distance'] as double?,
       distance: row['distance'] as double?,
       gh: row['gh'] as double?,
       ip: row['ip'] as double?,
+      deepestBedLevel: row['deepest_bed_level'] as double?,
+      plannedFloodLevel: row['planned_flood_level'] as double?,
+      leftBankHeight: row['left_bank_height'] as double?,
+      rightBankHeight: row['right_bank_height'] as double?,
+      plannedBankLeft: row['planned_bank_left'] as double?,
+      plannedBankRight: row['planned_bank_right'] as double?,
+      roadbedLeft: row['roadbed_left'] as double?,
+      roadbedRight: row['roadbed_right'] as double?,
       ghD: row['gh_d'] as double?,
       gh1: row['gh1'] as double?,
       gh2: row['gh2'] as double?,
@@ -356,7 +548,186 @@ class DatabaseService {
       lastModified: row['last_modified'] != null
           ? DateTime.parse(row['last_modified'] as String)
           : null,
+      memo: row['memo'] as String?,
     );
+  }
+
+  // ==================== 측량 세션 관리 ====================
+
+  /// 새 세션 생성
+  Future<int> createSession(int projectId, String name, {double? ih, String? planLevelColumn}) async {
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+    return await db.insert(tableMeasurementSessions, {
+      'project_id': projectId,
+      'name': name,
+      'ih': ih,
+      'plan_level_column': planLevelColumn,
+      'created_at': now,
+      'last_modified': now,
+    });
+  }
+
+  /// 세션 업데이트 (이름, IH 등)
+  Future<void> updateSession(int sessionId, {String? name, double? ih, String? planLevelColumn}) async {
+    final db = await database;
+    final data = <String, dynamic>{
+      'last_modified': DateTime.now().toIso8601String(),
+    };
+    if (name != null) data['name'] = name;
+    if (ih != null) data['ih'] = ih;
+    if (planLevelColumn != null) data['plan_level_column'] = planLevelColumn;
+    await db.update(tableMeasurementSessions, data,
+        where: 'id = ?', whereArgs: [sessionId]);
+  }
+
+  /// 프로젝트의 세션 목록 가져오기
+  Future<List<MeasurementSession>> getSessions(int projectId) async {
+    final db = await database;
+    final results = await db.rawQuery('''
+      SELECT s.*, COUNT(r.id) as record_count
+      FROM $tableMeasurementSessions s
+      LEFT JOIN $tableMeasurementRecords r ON r.session_id = s.id
+      WHERE s.project_id = ?
+      GROUP BY s.id
+      ORDER BY s.last_modified DESC
+    ''', [projectId]);
+
+    return results.map((row) => MeasurementSession(
+      id: row['id'] as int,
+      projectId: row['project_id'] as int,
+      name: row['name'] as String,
+      ih: row['ih'] as double?,
+      planLevelColumn: row['plan_level_column'] as String?,
+      createdAt: DateTime.parse(row['created_at'] as String),
+      lastModified: DateTime.parse(row['last_modified'] as String),
+      recordCount: row['record_count'] as int,
+    )).toList();
+  }
+
+  /// 세션 삭제
+  Future<void> deleteSession(int sessionId) async {
+    final db = await database;
+    await db.delete(tableMeasurementSessions,
+        where: 'id = ?', whereArgs: [sessionId]);
+  }
+
+  /// 측량 기록 저장 (upsert)
+  Future<void> upsertRecord(int sessionId, MeasurementRecord record) async {
+    final db = await database;
+    await db.insert(tableMeasurementRecords, {
+      'session_id': sessionId,
+      'station_no': record.stationNo,
+      'ih': record.ih,
+      'plan_level_column': record.planLevelColumn,
+      'target_reading': record.targetReading,
+      'actual_reading': record.actualReading,
+      'cut_fill': record.cutFill,
+      'cut_fill_status': record.cutFillStatus,
+      'measured_at': record.measuredAt.toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+    // 세션 last_modified 갱신
+    await db.update(tableMeasurementSessions,
+        {'last_modified': DateTime.now().toIso8601String()},
+        where: 'id = ?', whereArgs: [sessionId]);
+  }
+
+  /// 세션의 측량 기록 가져오기
+  Future<List<MeasurementRecord>> getRecords(int sessionId) async {
+    final db = await database;
+    final results = await db.query(
+      tableMeasurementRecords,
+      where: 'session_id = ?',
+      whereArgs: [sessionId],
+      orderBy: 'measured_at ASC',
+    );
+    return results.map((row) => MeasurementRecord(
+      id: row['id'] as int,
+      sessionId: row['session_id'] as int,
+      stationNo: row['station_no'] as String,
+      ih: row['ih'] as double?,
+      planLevelColumn: row['plan_level_column'] as String?,
+      targetReading: row['target_reading'] as double?,
+      actualReading: row['actual_reading'] as double?,
+      cutFill: row['cut_fill'] as double?,
+      cutFillStatus: row['cut_fill_status'] as String?,
+      measuredAt: DateTime.parse(row['measured_at'] as String),
+    )).toList();
+  }
+
+  // ==================== 측점 범위 관리 ====================
+
+  /// 범위 저장
+  Future<int> saveStationRange(int projectId, String name, String startNo, String endNo) async {
+    final db = await database;
+    return await db.insert(tableStationRanges, {
+      'project_id': projectId,
+      'name': name,
+      'start_station_no': startNo,
+      'end_station_no': endNo,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  /// 프로젝트의 저장된 범위 목록
+  Future<List<Map<String, dynamic>>> getStationRanges(int projectId) async {
+    final db = await database;
+    return await db.query(
+      tableStationRanges,
+      where: 'project_id = ?',
+      whereArgs: [projectId],
+      orderBy: 'created_at DESC',
+    );
+  }
+
+  /// 범위 삭제
+  Future<void> deleteStationRange(int rangeId) async {
+    final db = await database;
+    await db.delete(tableStationRanges, where: 'id = ?', whereArgs: [rangeId]);
+  }
+
+  // ==================== 기초레벨 결과 관리 ====================
+
+  /// 기초레벨 결과 저장
+  Future<int> saveFoundationResult(int projectId, {
+    required String label,
+    required String startStationNo,
+    required String endStationNo,
+    required String side,
+    required int interpolation,
+    required int excavationCm,
+    required String data,
+  }) async {
+    final db = await database;
+    return await db.insert(tableFoundationResults, {
+      'project_id': projectId,
+      'label': label,
+      'start_station_no': startStationNo,
+      'end_station_no': endStationNo,
+      'side': side,
+      'interpolation': interpolation,
+      'excavation_cm': excavationCm,
+      'data': data,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  /// 프로젝트의 기초레벨 결과 목록
+  Future<List<Map<String, dynamic>>> getFoundationResults(int projectId) async {
+    final db = await database;
+    return await db.query(
+      tableFoundationResults,
+      where: 'project_id = ?',
+      whereArgs: [projectId],
+      orderBy: 'created_at DESC',
+    );
+  }
+
+  /// 기초레벨 결과 삭제
+  Future<void> deleteFoundationResult(int id) async {
+    final db = await database;
+    await db.delete(tableFoundationResults, where: 'id = ?', whereArgs: [id]);
   }
 
   /// 데이터베이스 닫기

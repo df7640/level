@@ -36,6 +36,7 @@ class StationData {
   // 메타데이터
   final bool isInterpolated; // 보간된 데이터인지 여부
   final DateTime? lastModified;
+  final String? memo; // 측점 메모
 
   StationData({
     required this.no,
@@ -65,6 +66,7 @@ class StationData {
     this.y,
     this.isInterpolated = false,
     this.lastModified,
+    this.memo,
   });
 
   /// 측점 번호에서 기본 번호와 플러스 거리 추출
@@ -84,9 +86,18 @@ class StationData {
   /// 복사본 생성 (일부 필드 변경)
   StationData copyWith({
     String? no,
+    double? intervalDistance,
     double? distance,
     double? gh,
+    double? deepestBedLevel,
     double? ip,
+    double? plannedFloodLevel,
+    double? leftBankHeight,
+    double? rightBankHeight,
+    double? plannedBankLeft,
+    double? plannedBankRight,
+    double? roadbedLeft,
+    double? roadbedRight,
     double? ghD,
     double? gh1,
     double? gh2,
@@ -101,12 +112,22 @@ class StationData {
     double? y,
     bool? isInterpolated,
     DateTime? lastModified,
+    String? memo,
   }) {
     return StationData(
       no: no ?? this.no,
+      intervalDistance: intervalDistance ?? this.intervalDistance,
       distance: distance ?? this.distance,
       gh: gh ?? this.gh,
+      deepestBedLevel: deepestBedLevel ?? this.deepestBedLevel,
       ip: ip ?? this.ip,
+      plannedFloodLevel: plannedFloodLevel ?? this.plannedFloodLevel,
+      leftBankHeight: leftBankHeight ?? this.leftBankHeight,
+      rightBankHeight: rightBankHeight ?? this.rightBankHeight,
+      plannedBankLeft: plannedBankLeft ?? this.plannedBankLeft,
+      plannedBankRight: plannedBankRight ?? this.plannedBankRight,
+      roadbedLeft: roadbedLeft ?? this.roadbedLeft,
+      roadbedRight: roadbedRight ?? this.roadbedRight,
       ghD: ghD ?? this.ghD,
       gh1: gh1 ?? this.gh1,
       gh2: gh2 ?? this.gh2,
@@ -121,6 +142,7 @@ class StationData {
       y: y ?? this.y,
       isInterpolated: isInterpolated ?? this.isInterpolated,
       lastModified: lastModified ?? this.lastModified,
+      memo: memo ?? this.memo,
     );
   }
 
@@ -128,9 +150,18 @@ class StationData {
   Map<String, dynamic> toJson() {
     return {
       'no': no,
+      'interval_distance': intervalDistance,
       'distance': distance,
       'gh': gh,
+      'deepest_bed_level': deepestBedLevel,
       'ip': ip,
+      'planned_flood_level': plannedFloodLevel,
+      'left_bank_height': leftBankHeight,
+      'right_bank_height': rightBankHeight,
+      'planned_bank_left': plannedBankLeft,
+      'planned_bank_right': plannedBankRight,
+      'roadbed_left': roadbedLeft,
+      'roadbed_right': roadbedRight,
       'gh_d': ghD,
       'gh1': gh1,
       'gh2': gh2,
@@ -145,6 +176,7 @@ class StationData {
       'y': y,
       'is_interpolated': isInterpolated,
       'last_modified': lastModified?.toIso8601String(),
+      'memo': memo,
     };
   }
 
@@ -152,9 +184,18 @@ class StationData {
   factory StationData.fromJson(Map<String, dynamic> json) {
     return StationData(
       no: json['no'] as String,
+      intervalDistance: json['interval_distance'] as double?,
       distance: json['distance'] as double?,
       gh: json['gh'] as double?,
+      deepestBedLevel: json['deepest_bed_level'] as double?,
       ip: json['ip'] as double?,
+      plannedFloodLevel: json['planned_flood_level'] as double?,
+      leftBankHeight: json['left_bank_height'] as double?,
+      rightBankHeight: json['right_bank_height'] as double?,
+      plannedBankLeft: json['planned_bank_left'] as double?,
+      plannedBankRight: json['planned_bank_right'] as double?,
+      roadbedLeft: json['roadbed_left'] as double?,
+      roadbedRight: json['roadbed_right'] as double?,
       ghD: json['gh_d'] as double?,
       gh1: json['gh1'] as double?,
       gh2: json['gh2'] as double?,
@@ -171,6 +212,7 @@ class StationData {
       lastModified: json['last_modified'] != null
           ? DateTime.parse(json['last_modified'] as String)
           : null,
+      memo: json['memo'] as String?,
     );
   }
 
@@ -178,21 +220,20 @@ class StationData {
   List<String> toCsvRow() {
     return [
       no,
+      intervalDistance?.toString() ?? '',
       distance?.toString() ?? '',
       gh?.toString() ?? '',
+      deepestBedLevel?.toString() ?? '',
       ip?.toString() ?? '',
-      ghD?.toString() ?? '',
-      gh1?.toString() ?? '',
-      gh2?.toString() ?? '',
-      gh3?.toString() ?? '',
-      gh4?.toString() ?? '',
-      gh5?.toString() ?? '',
+      plannedFloodLevel?.toString() ?? '',
+      leftBankHeight?.toString() ?? '',
+      rightBankHeight?.toString() ?? '',
+      plannedBankLeft?.toString() ?? '',
+      plannedBankRight?.toString() ?? '',
+      roadbedLeft?.toString() ?? '',
+      roadbedRight?.toString() ?? '',
       x?.toString() ?? '',
       y?.toString() ?? '',
-      actualReading?.toString() ?? '',
-      targetReading?.toString() ?? '',
-      cutFill?.toString() ?? '',
-      cutFillStatus ?? '',
     ];
   }
 

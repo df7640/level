@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:excel/excel.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import '../models/station_data.dart';
 
 /// Excel 파일 처리 서비스
@@ -18,7 +19,7 @@ class ExcelService {
       }
       return null;
     } catch (e) {
-      print('파일 선택 오류: $e');
+      debugPrint('파일 선택 오류: $e');
       return null;
     }
   }
@@ -31,10 +32,10 @@ class ExcelService {
       final excel = Excel.decodeBytes(bytes);
 
       // 첫 번째 시트 사용
-      final sheet = excel.tables.values.first;
-      if (sheet == null) {
+      if (excel.tables.isEmpty) {
         throw Exception('시트를 찾을 수 없습니다');
       }
+      final sheet = excel.tables.values.first;
 
       final List<StationData> stations = [];
 
@@ -88,7 +89,7 @@ class ExcelService {
 
       return stations;
     } catch (e) {
-      print('Excel 파일 읽기 오류: $e');
+      debugPrint('Excel 파일 읽기 오류: $e');
       rethrow;
     }
   }
@@ -101,7 +102,7 @@ class ExcelService {
       // 임시로 파일 경로 반환
       return [];
     } catch (e) {
-      print('샘플 파일 로드 오류: $e');
+      debugPrint('샘플 파일 로드 오류: $e');
       return [];
     }
   }
@@ -203,7 +204,7 @@ class ExcelService {
 
       return null;
     } catch (e) {
-      print('Excel 내보내기 오류: $e');
+      debugPrint('Excel 내보내기 오류: $e');
       return null;
     }
   }

@@ -1,5 +1,5 @@
-import 'dart:convert';
 import 'package:csv/csv.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import '../models/station_data.dart';
 
@@ -11,12 +11,24 @@ class CsvService {
       // CSV 파일 읽기
       final csvString = await rootBundle.loadString(assetPath);
 
-      // CSV 파싱
-      final csvData = const CsvToListConverter().convert(
-        csvString,
-        eol: '\n',
-        fieldDelimiter: ',',
-      );
+      // CSV 파싱 (측점 컬럼의 +7.00 등이 숫자 7.0으로 변환되지 않도록
+      // 먼저 행 단위로 분리 후, 첫 번째 컬럼은 문자열로 보존)
+      final lines = csvString.split('\n').where((l) => l.trim().isNotEmpty).toList();
+      final csvData = <List<dynamic>>[];
+      for (final line in lines) {
+        final parsed = const CsvToListConverter().convert(line, fieldDelimiter: ',');
+        if (parsed.isNotEmpty) {
+          final row = parsed.first;
+          // 첫 번째 컬럼(측점)을 원본 문자열로 보존
+          if (row.isNotEmpty) {
+            final firstComma = line.indexOf(',');
+            if (firstComma > 0) {
+              row[0] = line.substring(0, firstComma).trim();
+            }
+          }
+          csvData.add(row);
+        }
+      }
 
       if (csvData.isEmpty) {
         throw Exception('CSV 파일이 비어있습니다');
@@ -29,18 +41,28 @@ class CsvService {
         headerMap[headers[i]] = i;
       }
 
-      print('CSV 헤더: $headers');
+      debugPrint('CSV 헤더: $headers');
 
       // 데이터 행 파싱
       final List<StationData> stations = [];
+      String lastBaseNo = ''; // 마지막 기본 측점명 추적
 
       for (int i = 1; i < csvData.length; i++) {
         final row = csvData[i];
 
         try {
           // 측점 번호 (NO.0, NO.1, +7.00 등)
-          final no = _getStringValue(row, headerMap['측점']);
-          if (no == null || no.isEmpty) continue;
+          final rawNo = _getStringValue(row, headerMap['측점']);
+          if (rawNo == null || rawNo.isEmpty) continue;
+
+          // 플러스 체인이면 소속 기본 측점명을 붙여 고유하게 만듦
+          // +7.00 → NO.2+7.00
+          String no = rawNo;
+          if (rawNo.startsWith('+') && lastBaseNo.isNotEmpty) {
+            no = '$lastBaseNo$rawNo';
+          } else {
+            lastBaseNo = rawNo;
+          }
 
           // StationData 생성 - CSV의 모든 필드 읽기
           final station = StationData(
@@ -59,21 +81,21 @@ class CsvService {
             roadbedRight: _getDoubleValue(row, headerMap['노체_우안']),
             x: _getDoubleValue(row, headerMap['X']),
             y: _getDoubleValue(row, headerMap['Y']),
-            isInterpolated: no.contains('+'),
+            isInterpolated: false, // CSV 원본 데이터는 보간이 아님
             lastModified: DateTime.now(),
           );
 
           stations.add(station);
         } catch (e) {
-          print('행 파싱 오류 (행 ${i + 1}): $e');
+          debugPrint('행 파싱 오류 (행 ${i + 1}): $e');
           continue;
         }
       }
 
-      print('CSV 로드 완료: ${stations.length}개 측점');
+      debugPrint('CSV 로드 완료: ${stations.length}개 측점');
       return stations;
     } catch (e) {
-      print('CSV 파일 로드 오류: $e');
+      debugPrint('CSV 파일 로드 오류: $e');
       rethrow;
     }
   }

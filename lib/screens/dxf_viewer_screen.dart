@@ -1,8 +1,12 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
+import '../models/dimension_data.dart';
 import '../models/station_data.dart';
 import '../services/dxf_service.dart';
 import '../services/snap_service.dart';
 import '../widgets/dxf_painter.dart';
+import '../widgets/dimension_painter.dart';
+import '../widgets/magnification_painter.dart';
 import '../widgets/snap_overlay_painter.dart';
 
 /// DXF 뷰어 화면
@@ -21,8 +25,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   double _zoom = 1.0;
   Offset _offset = Offset.zero;
   Offset _lastFocalPoint = Offset.zero;
+  double _lastZoom = 1.0; // 핀치 줌 누적 방지용
 
-  // 영역 확대 모드
+  // 영역 확대 모드 (확대 버튼 드래그 시 활성)
   bool _isZoomWindowMode = false;
   Offset? _zoomWindowStart;
   Offset? _zoomWindowEnd;
@@ -51,6 +56,20 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
   // 확정된 스냅 포인트 (DXF 좌표로 저장 → 줌/팬에도 좌표 유지)
   final List<({SnapType type, double dxfX, double dxfY})> _confirmedPoints = [];
+
+  // 치수 측정 모드
+  bool _isDimensionMode = false;
+  DimensionType _activeDimType = DimensionType.aligned;
+  ({SnapType type, double dxfX, double dxfY})? _dimFirstPoint; // 첫 번째 점
+  ({SnapType type, double dxfX, double dxfY})? _dimSecondPoint; // 각도 치수용 두 번째 점 (꼭짓점)
+  ({double x1, double y1, double x2, double y2, double value, DimensionType type, double? x3, double? y3})? _dimPending; // 배치 대기 중인 치수
+  Offset? _dimPlacementDxf; // 배치 드래그 중 치수선 위치 (DXF 좌표)
+  final List<DimensionResult> _dimResults = [];
+  DimensionStyle _dimStyle = const DimensionStyle();
+  int? _selectedDimIndex; // 선택된 치수 (편집/삭제)
+  bool _showDimPanel = false; // 치수 관리 패널
+  bool _showDimStylePanel = false; // 스타일 설정 패널
+  Offset? _cursorTipDxf; // 커서 팁 DXF 좌표 (확대 원용)
 
   /// 좌표가 있는 측점만 필터
   List<StationData> get _stationsWithCoords =>
@@ -85,10 +104,11 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     final windowHeight = bottom - top;
 
     if (windowWidth < 10 || windowHeight < 10) {
+      // 드래그 없이 클릭만 한 경우: 클릭 지점 중심으로 2배 확대
+      _zoomAtPoint(_zoomWindowStart!, 2.0);
       setState(() {
         _zoomWindowStart = null;
         _zoomWindowEnd = null;
-        _isZoomWindowMode = false;
       });
       return;
     }
@@ -160,8 +180,276 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       _offset = Offset(newOffsetDx, newOffsetDy);
       _zoomWindowStart = null;
       _zoomWindowEnd = null;
-      _isZoomWindowMode = false;
     });
+
+    if (_lastCanvasSize != null) _syncNearestStation(_lastCanvasSize!);
+  }
+
+  /// 화면 중앙 기준으로 확대/축소
+  void _zoomAtScreenCenter(double factor) {
+    if (_dxfData == null || _lastCanvasSize == null) return;
+    final canvasSize = _lastCanvasSize!;
+    // 화면 중앙 좌표
+    final centerX = canvasSize.width / 2;
+    final centerY = canvasSize.height / 2;
+
+    final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
+    final minX = bounds['minX'] as double;
+    final minY = bounds['minY'] as double;
+    final maxX = bounds['maxX'] as double;
+    final maxY = bounds['maxY'] as double;
+    final dxfWidth = maxX - minX;
+    final dxfHeight = maxY - minY;
+    if (dxfWidth <= 0 || dxfHeight <= 0) return;
+
+    final scaleX = canvasSize.width * 0.9 / dxfWidth;
+    final scaleY = canvasSize.height * 0.9 / dxfHeight;
+    final baseScale = scaleX < scaleY ? scaleX : scaleY;
+    final oldScale = baseScale * _zoom;
+    final newZoom = _zoom * factor;
+    final newScale = baseScale * newZoom;
+
+    // 화면 중앙의 DXF 좌표를 유지하도록 오프셋 조정
+    final cOffX = (canvasSize.width - dxfWidth * oldScale) / 2;
+    final cOffY = (canvasSize.height - dxfHeight * oldScale) / 2;
+    final dxfX = (centerX - cOffX - _offset.dx) / oldScale + minX;
+    final dxfY = (canvasSize.height - centerY - cOffY - _offset.dy) / oldScale + minY;
+
+    final newCOffX = (canvasSize.width - dxfWidth * newScale) / 2;
+    final newCOffY = (canvasSize.height - dxfHeight * newScale) / 2;
+    final newOffsetDx = centerX - (dxfX - minX) * newScale - newCOffX;
+    final newOffsetDy = canvasSize.height - centerY - (dxfY - minY) * newScale - newCOffY;
+
+    setState(() {
+      _zoom = newZoom;
+      _offset = Offset(newOffsetDx, newOffsetDy);
+    });
+
+    _syncNearestStation(canvasSize);
+  }
+
+  /// 특정 화면 좌표 기준으로 확대/축소
+  void _zoomAtPoint(Offset screenPoint, double factor) {
+    if (_dxfData == null || _lastCanvasSize == null) return;
+    final canvasSize = _lastCanvasSize!;
+
+    final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
+    final minX = bounds['minX'] as double;
+    final minY = bounds['minY'] as double;
+    final maxX = bounds['maxX'] as double;
+    final maxY = bounds['maxY'] as double;
+    final dxfWidth = maxX - minX;
+    final dxfHeight = maxY - minY;
+    if (dxfWidth <= 0 || dxfHeight <= 0) return;
+
+    final scaleX = canvasSize.width * 0.9 / dxfWidth;
+    final scaleY = canvasSize.height * 0.9 / dxfHeight;
+    final baseScale = scaleX < scaleY ? scaleX : scaleY;
+    final oldScale = baseScale * _zoom;
+    final newZoom = _zoom * factor;
+    final newScale = baseScale * newZoom;
+
+    final cOffX = (canvasSize.width - dxfWidth * oldScale) / 2;
+    final cOffY = (canvasSize.height - dxfHeight * oldScale) / 2;
+    final dxfX = (screenPoint.dx - cOffX - _offset.dx) / oldScale + minX;
+    final dxfY = (canvasSize.height - screenPoint.dy - cOffY - _offset.dy) / oldScale + minY;
+
+    final newCOffX = (canvasSize.width - dxfWidth * newScale) / 2;
+    final newCOffY = (canvasSize.height - dxfHeight * newScale) / 2;
+    // 클릭 지점의 DXF 좌표가 화면 중앙에 오도록 오프셋 계산
+    final centerX = canvasSize.width / 2;
+    final centerY = canvasSize.height / 2;
+    final newOffsetDx = centerX - (dxfX - minX) * newScale - newCOffX;
+    final newOffsetDy = canvasSize.height - centerY - (dxfY - minY) * newScale - newCOffY;
+
+    setState(() {
+      _zoom = newZoom;
+      _offset = Offset(newOffsetDx, newOffsetDy);
+    });
+
+    _syncNearestStation(canvasSize);
+  }
+
+  /// 치수 스냅 확정 처리 (1점/2점/3점 워크플로우)
+  void _handleDimSnapConfirm() {
+    if (_activeSnap == null) return;
+
+    if (_activeDimType == DimensionType.angular) {
+      // 각도 치수: 3점 워크플로우 (방향점1 → 꼭짓점 → 방향점2)
+      if (_dimFirstPoint == null) {
+        _dimFirstPoint = (
+          type: _activeSnap!.type,
+          dxfX: _activeSnap!.dxfX,
+          dxfY: _activeSnap!.dxfY,
+        );
+      } else if (_dimSecondPoint == null) {
+        _dimSecondPoint = (
+          type: _activeSnap!.type,
+          dxfX: _activeSnap!.dxfX,
+          dxfY: _activeSnap!.dxfY,
+        );
+      } else {
+        // 3점 확정 → 각도 계산 → 배치 대기
+        final vx = _dimSecondPoint!.dxfX; // 꼭짓점
+        final vy = _dimSecondPoint!.dxfY;
+        final a1 = atan2(_dimFirstPoint!.dxfY - vy, _dimFirstPoint!.dxfX - vx);
+        final a2 = atan2(_activeSnap!.dxfY - vy, _activeSnap!.dxfX - vx);
+        double angleDeg = (a2 - a1) * 180.0 / pi;
+        if (angleDeg < 0) angleDeg += 360;
+        if (angleDeg > 180) angleDeg = 360 - angleDeg;
+
+        _dimPending = (
+          x1: _dimFirstPoint!.dxfX,
+          y1: _dimFirstPoint!.dxfY,
+          x2: _activeSnap!.dxfX,
+          y2: _activeSnap!.dxfY,
+          x3: vx,
+          y3: vy,
+          value: angleDeg,
+          type: DimensionType.angular,
+        );
+        final midX = (vx + _dimFirstPoint!.dxfX + _activeSnap!.dxfX) / 3;
+        final midY = (vy + _dimFirstPoint!.dxfY + _activeSnap!.dxfY) / 3;
+        _dimPlacementDxf = Offset(midX, midY);
+      }
+    } else {
+      // 2점 워크플로우 (정렬/수평/수직)
+      if (_dimFirstPoint == null) {
+        _dimFirstPoint = (
+          type: _activeSnap!.type,
+          dxfX: _activeSnap!.dxfX,
+          dxfY: _activeSnap!.dxfY,
+        );
+      } else {
+        final dx = _activeSnap!.dxfX - _dimFirstPoint!.dxfX;
+        final dy = _activeSnap!.dxfY - _dimFirstPoint!.dxfY;
+
+        double value;
+        switch (_activeDimType) {
+          case DimensionType.aligned:
+            value = sqrt(dx * dx + dy * dy);
+            break;
+          case DimensionType.horizontal:
+            value = dx.abs();
+            break;
+          case DimensionType.vertical:
+            value = dy.abs();
+            break;
+          case DimensionType.angular:
+            value = 0; // 여기 도달하지 않음
+            break;
+        }
+
+        _dimPending = (
+          x1: _dimFirstPoint!.dxfX,
+          y1: _dimFirstPoint!.dxfY,
+          x2: _activeSnap!.dxfX,
+          y2: _activeSnap!.dxfY,
+          x3: null,
+          y3: null,
+          value: value,
+          type: _activeDimType,
+        );
+        final midX = (_dimFirstPoint!.dxfX + _activeSnap!.dxfX) / 2;
+        final midY = (_dimFirstPoint!.dxfY + _activeSnap!.dxfY) / 2;
+        _dimPlacementDxf = Offset(midX, midY);
+      }
+    }
+  }
+
+  /// 치수 삭제
+  void _deleteDimension(int index) {
+    setState(() {
+      _dimResults.removeAt(index);
+      if (_selectedDimIndex == index) _selectedDimIndex = null;
+      if (_selectedDimIndex != null && _selectedDimIndex! > index) {
+        _selectedDimIndex = _selectedDimIndex! - 1;
+      }
+    });
+  }
+
+  /// 전체 치수 삭제
+  void _deleteAllDimensions() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('모든 치수 삭제'),
+        content: Text('${_dimResults.length}개의 치수를 모두 삭제하시겠습니까?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('취소')),
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _dimResults.clear();
+                _selectedDimIndex = null;
+              });
+              Navigator.pop(ctx);
+            },
+            child: const Text('삭제', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 치수 타입 선택 메뉴
+  void _showDimTypeMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.grey[900],
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _dimTypeMenuItem(ctx, DimensionType.aligned, Icons.straighten, '정렬(사선) 치수'),
+            _dimTypeMenuItem(ctx, DimensionType.horizontal, Icons.swap_horiz, '수평 치수'),
+            _dimTypeMenuItem(ctx, DimensionType.vertical, Icons.swap_vert, '수직 치수'),
+            _dimTypeMenuItem(ctx, DimensionType.angular, Icons.architecture, '각도 치수'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _dimTypeMenuItem(BuildContext ctx, DimensionType type, IconData icon, String label) {
+    final isSelected = _activeDimType == type;
+    return ListTile(
+      leading: Icon(icon, color: isSelected ? Colors.cyan : Colors.white70),
+      title: Text(label, style: TextStyle(color: isSelected ? Colors.cyan : Colors.white)),
+      selected: isSelected,
+      onTap: () {
+        setState(() => _activeDimType = type);
+        Navigator.pop(ctx);
+      },
+    );
+  }
+
+  /// 치수 타입별 아이콘
+  IconData _getDimTypeIcon(DimensionType type) {
+    switch (type) {
+      case DimensionType.aligned:
+        return Icons.straighten;
+      case DimensionType.horizontal:
+        return Icons.swap_horiz;
+      case DimensionType.vertical:
+        return Icons.swap_vert;
+      case DimensionType.angular:
+        return Icons.architecture;
+    }
+  }
+
+  /// 치수 타입별 라벨
+  String _getDimTypeLabel(DimensionType type) {
+    switch (type) {
+      case DimensionType.aligned:
+        return '정렬';
+      case DimensionType.horizontal:
+        return '수평';
+      case DimensionType.vertical:
+        return '수직';
+      case DimensionType.angular:
+        return '각도';
+    }
   }
 
   /// 샘플 DXF 파일 로드
@@ -176,12 +464,23 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
           _dxfData = data;
           _isLoading = false;
           _hiddenLayers.clear();
+          _dimResults.clear();
+          _dimFirstPoint = null;
+          _dimSecondPoint = null;
+          _dimPending = null;
+          _dimPlacementDxf = null;
+          _isDimensionMode = false;
+          _selectedDimIndex = null;
+          _showDimPanel = false;
+          _showDimStylePanel = false;
+          _confirmedPoints.clear();
+          _isPointMode = false;
         });
       } else {
         setState(() => _isLoading = false);
       }
     } catch (e) {
-      print('[DXF Viewer] 로드 오류: $e');
+      debugPrint('[DXF Viewer] 로드 오류: $e');
       setState(() => _isLoading = false);
     }
   }
@@ -205,6 +504,17 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
             _selectedStation = null;
             _hiddenLayers.clear();
             _showLayerPanel = false;
+            _dimResults.clear();
+            _dimFirstPoint = null;
+            _dimSecondPoint = null;
+            _dimPending = null;
+            _dimPlacementDxf = null;
+            _isDimensionMode = false;
+            _selectedDimIndex = null;
+            _showDimPanel = false;
+            _showDimStylePanel = false;
+            _confirmedPoints.clear();
+            _isPointMode = false;
           });
         } else {
           setState(() => _isLoading = false);
@@ -216,7 +526,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         }
       }
     } catch (e) {
-      print('[DXF Viewer] 파일 열기 오류: $e');
+      debugPrint('[DXF Viewer] 파일 열기 오류: $e');
       setState(() => _isLoading = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -226,47 +536,94 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     }
   }
 
-  /// 선택된 측점의 DXF 좌표로 뷰 이동
-  void _goToStation(StationData station) {
-    if (_dxfData == null || station.x == null || station.y == null) return;
+  /// 화면 중앙에서 가장 가까운 측점으로 선택 상태 동기화
+  void _syncNearestStation(Size canvasSize) {
+    if (_dxfData == null || _baseStationsWithCoords.isEmpty) return;
 
     final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
     final minX = bounds['minX'] as double;
     final minY = bounds['minY'] as double;
     final maxX = bounds['maxX'] as double;
     final maxY = bounds['maxY'] as double;
-    final dxfWidth = maxX - minX;
-    final dxfHeight = maxY - minY;
+    final dxfW = maxX - minX;
+    final dxfH = maxY - minY;
+    if (dxfW <= 0 || dxfH <= 0) return;
 
-    if (dxfWidth <= 0 || dxfHeight <= 0) return;
+    final sX = canvasSize.width * 0.9 / dxfW;
+    final sY = canvasSize.height * 0.9 / dxfH;
+    final baseScale = sX < sY ? sX : sY;
+    final scale = baseScale * _zoom;
+    final cOffX = (canvasSize.width - dxfW * scale) / 2;
+    final cOffY = (canvasSize.height - dxfH * scale) / 2;
 
-    final screenSize = MediaQuery.of(context).size;
-    final appBarHeight = AppBar().preferredSize.height +
-        MediaQuery.of(context).padding.top +
-        48; // 드롭다운 영역 높이
-    final canvasWidth = screenSize.width;
-    final canvasHeight = screenSize.height - appBarHeight - _bottomBarHeight;
+    // 화면 중앙 → DXF 좌표
+    final centerX = canvasSize.width / 2;
+    final centerY = canvasSize.height / 2;
+    final dxfX = (centerX - cOffX - _offset.dx) / scale + minX;
+    final dxfY = (canvasSize.height - centerY - cOffY - _offset.dy) / scale + minY;
 
-    final scaleX = canvasWidth * 0.9 / dxfWidth;
-    final scaleY = canvasHeight * 0.9 / dxfHeight;
-    final baseScale = scaleX < scaleY ? scaleX : scaleY;
+    // 가장 가까운 측점 찾기
+    StationData? nearest;
+    double minDist = double.infinity;
+    for (final s in _baseStationsWithCoords) {
+      final dx = s.x! - dxfX;
+      final dy = s.y! - dxfY;
+      final d = dx * dx + dy * dy;
+      if (d < minDist) {
+        minDist = d;
+        nearest = s;
+      }
+    }
 
-    final newZoom = _stationZoomLevel;
-    final scale = baseScale * newZoom;
+    if (nearest != null && nearest.no != _selectedStation?.no) {
+      setState(() => _selectedStation = nearest);
+    }
+  }
 
-    final centerOffsetX = (canvasWidth - dxfWidth * scale) / 2;
-    final centerOffsetY = (canvasHeight - dxfHeight * scale) / 2;
+  /// 선택된 측점의 DXF 좌표로 뷰 이동
+  void _goToStation(StationData station) {
+    if (_dxfData == null || station.x == null || station.y == null) return;
 
-    final stationScreenX = (station.x! - minX) * scale + centerOffsetX;
-    final stationScreenY = canvasHeight - ((station.y! - minY) * scale + centerOffsetY);
-
-    final targetOffsetDx = canvasWidth / 2 - stationScreenX;
-    final targetOffsetDy = -(canvasHeight / 2 - stationScreenY);
-
+    // 패널 닫기 + 선택 상태 먼저 반영
     setState(() {
-      _zoom = newZoom;
-      _offset = Offset(targetOffsetDx, targetOffsetDy);
       _selectedStation = station;
+      _showStationPanel = false;
+    });
+
+    // 레이아웃 갱신 후 실제 캔버스 크기로 오프셋 계산
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final canvasSize = _lastCanvasSize;
+      if (canvasSize == null) return;
+
+      final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
+      final minX = bounds['minX'] as double;
+      final minY = bounds['minY'] as double;
+      final maxX = bounds['maxX'] as double;
+      final maxY = bounds['maxY'] as double;
+      final dxfWidth = maxX - minX;
+      final dxfHeight = maxY - minY;
+      if (dxfWidth <= 0 || dxfHeight <= 0) return;
+
+      final scaleX = canvasSize.width * 0.9 / dxfWidth;
+      final scaleY = canvasSize.height * 0.9 / dxfHeight;
+      final baseScale = scaleX < scaleY ? scaleX : scaleY;
+
+      final newZoom = _stationZoomLevel;
+      final scale = baseScale * newZoom;
+
+      final centerOffsetX = (canvasSize.width - dxfWidth * scale) / 2;
+      final centerOffsetY = (canvasSize.height - dxfHeight * scale) / 2;
+
+      // 측점 DXF 좌표가 화면 중앙에 오도록 오프셋 계산
+      final screenCenterX = canvasSize.width / 2;
+      final screenCenterY = canvasSize.height / 2;
+      final newOffsetDx = screenCenterX - (station.x! - minX) * scale - centerOffsetX;
+      final newOffsetDy = canvasSize.height - screenCenterY - (station.y! - minY) * scale - centerOffsetY;
+
+      setState(() {
+        _zoom = newZoom;
+        _offset = Offset(newOffsetDx, newOffsetDy);
+      });
     });
   }
 
@@ -316,7 +673,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     return baseScale * _zoom;
   }
 
-  /// 포인트 모드에서 터치 시 스냅 계산
+  /// 포인트/치수 모드에서 터치 시 스냅 계산
   void _handlePointTouch(Offset touchPoint, Size canvasSize) {
     final transformPoint = _getTransformPoint(canvasSize);
     if (transformPoint == null || _dxfData == null) return;
@@ -329,15 +686,58 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       entities: _dxfData!['entities'] as List,
       hiddenLayers: _hiddenLayers,
       transformPoint: transformPoint,
-      inverseTransform: transformPoint, // 역변환은 스냅 계산에서 미사용
+      inverseTransform: transformPoint,
       scale: scale,
       zoom: _zoom,
     );
+
+    // 커서 팁의 DXF 좌표 계산 (확대 원용)
+    final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
+    final minX = bounds['minX'] as double;
+    final minY = bounds['minY'] as double;
+    final maxX = bounds['maxX'] as double;
+    final maxY = bounds['maxY'] as double;
+    final dxfW = maxX - minX;
+    final dxfH = maxY - minY;
+    final sX = canvasSize.width * 0.9 / dxfW;
+    final sY = canvasSize.height * 0.9 / dxfH;
+    final baseScale = sX < sY ? sX : sY;
+    final currentScale = baseScale * _zoom;
+    final cOffX = (canvasSize.width - dxfW * currentScale) / 2;
+    final cOffY = (canvasSize.height - dxfH * currentScale) / 2;
+    final tipDxfX = (cursorTip.dx - cOffX - _offset.dx) / currentScale + minX;
+    final tipDxfY = (canvasSize.height - cursorTip.dy - cOffY - _offset.dy) / currentScale + minY;
 
     setState(() {
       _touchPoint = touchPoint;
       _highlightEntity = result.entity;
       _activeSnap = result.snap;
+      _cursorTipDxf = Offset(tipDxfX, tipDxfY);
+    });
+  }
+
+  /// 치수 배치 단계: 터치 위치를 DXF 좌표로 변환하여 치수선 위치 결정
+  void _handleDimPlacement(Offset touchPoint, Size canvasSize) {
+    if (_dxfData == null) return;
+
+    final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
+    final minX = bounds['minX'] as double;
+    final minY = bounds['minY'] as double;
+    final maxX = bounds['maxX'] as double;
+    final maxY = bounds['maxY'] as double;
+    final dxfW = maxX - minX;
+    final dxfH = maxY - minY;
+    final sX = canvasSize.width * 0.9 / dxfW;
+    final sY = canvasSize.height * 0.9 / dxfH;
+    final baseScale = sX < sY ? sX : sY;
+    final currentScale = baseScale * _zoom;
+    final cOffX = (canvasSize.width - dxfW * currentScale) / 2;
+    final cOffY = (canvasSize.height - dxfH * currentScale) / 2;
+    final dxfX = (touchPoint.dx - cOffX - _offset.dx) / currentScale + minX;
+    final dxfY = (canvasSize.height - touchPoint.dy - cOffY - _offset.dy) / currentScale + minY;
+
+    setState(() {
+      _dimPlacementDxf = Offset(dxfX, dxfY);
     });
   }
 
@@ -349,10 +749,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         actions: [
           IconButton(
             icon: Icon(
-              Icons.crop_free,
+              Icons.zoom_in,
               color: _isZoomWindowMode ? Colors.blue : null,
             ),
-            tooltip: '영역 확대',
             onPressed: () {
               setState(() {
                 _isZoomWindowMode = !_isZoomWindowMode;
@@ -362,24 +761,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
             },
           ),
           IconButton(
-            icon: const Icon(Icons.zoom_in),
-            onPressed: () {
-              setState(() {
-                final oldZoom = _zoom;
-                _zoom *= 1.5;
-                _offset *= _zoom / oldZoom;
-              });
-            },
-          ),
-          IconButton(
             icon: const Icon(Icons.zoom_out),
-            onPressed: () {
-              setState(() {
-                final oldZoom = _zoom;
-                _zoom /= 1.5;
-                _offset *= _zoom / oldZoom;
-              });
-            },
+            onPressed: () => _zoomAtScreenCenter(1 / 1.5),
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -404,83 +787,119 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   ],
                 )
               : const Center(child: Text('DXF 파일을 불러올 수 없습니다')),
-      floatingActionButton: _dxfData != null
-          ? FloatingActionButton(
-              onPressed: () {
-                setState(() {
-                  _isPointMode = !_isPointMode;
-                  if (!_isPointMode) {
-                    _touchPoint = null;
-                    _activeSnap = null;
-                    _highlightEntity = null;
-                  }
-                });
-              },
-              backgroundColor: _isPointMode ? Colors.cyan : Colors.grey[800],
-              child: Icon(
-                Icons.control_point,
-                color: _isPointMode ? Colors.black : Colors.white70,
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+      floatingActionButton: _dxfData != null && !_isDimensionMode
+          ? Padding(
+              padding: const EdgeInsets.only(bottom: 80),
+              child: FloatingActionButton(
+                onPressed: () {
+                  setState(() {
+                    _isPointMode = !_isPointMode;
+                    if (!_isPointMode) {
+                      _touchPoint = null;
+                      _activeSnap = null;
+                      _highlightEntity = null;
+                    }
+                  });
+                },
+                backgroundColor: _isPointMode ? Colors.cyan : Colors.grey[800],
+                child: Icon(
+                  Icons.control_point,
+                  color: _isPointMode ? Colors.black : Colors.white70,
+                ),
               ),
             )
           : null,
     );
   }
 
-  /// 측점 선택 드롭다운 바
+  // 측점 패널 표시 여부
+  bool _showStationPanel = false;
+
+  /// "NO.12" → "12" 로 표시
+  String _shortStationNo(String no) {
+    final match = RegExp(r'^NO\.(\d+)', caseSensitive: false).firstMatch(no);
+    if (match != null) return match.group(1)!;
+    return no;
+  }
+
+  /// 좌표 있는 기본 측점만 (NO.xx만, 플러스 체인 제외)
+  List<StationData> get _baseStationsWithCoords =>
+      _stationsWithCoords.where((s) => s.isBaseStation).toList();
+
+  /// 측점 선택 버튼 + 토글 패널
   Widget _buildStationSelector() {
-    return Container(
-      height: 48,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      color: Colors.grey[850],
-      child: Row(
-        children: [
-          const Icon(Icons.location_on, color: Colors.cyan, size: 20),
-          const SizedBox(width: 8),
-          Expanded(
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                value: _selectedStation?.no,
-                hint: Text(
-                  '측점 선택 (${_stationsWithCoords.length}개)',
-                  style: const TextStyle(color: Colors.white70, fontSize: 14),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // 토글 버튼 바
+        GestureDetector(
+          onTap: () => setState(() => _showStationPanel = !_showStationPanel),
+          child: Container(
+            height: 36,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            color: Colors.grey[850],
+            child: Row(
+              children: [
+                const Icon(Icons.location_on, color: Colors.cyan, size: 18),
+                const SizedBox(width: 6),
+                Text(
+                  _selectedStation != null
+                      ? '측점 ${_shortStationNo(_selectedStation!.no)}'
+                      : '측점 선택',
+                  style: const TextStyle(color: Colors.white70, fontSize: 13),
                 ),
-                isExpanded: true,
-                dropdownColor: Colors.grey[800],
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-                icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
-                menuMaxHeight: 400,
-                items: _stationsWithCoords.map((station) {
-                  return DropdownMenuItem<String>(
-                    value: station.no,
-                    child: Text(
-                      '${station.no}  (${station.x!.toStringAsFixed(1)}, ${station.y!.toStringAsFixed(1)})',
-                      overflow: TextOverflow.ellipsis,
+                const Spacer(),
+                Icon(
+                  _showStationPanel ? Icons.expand_less : Icons.expand_more,
+                  color: Colors.white54,
+                  size: 20,
+                ),
+              ],
+            ),
+          ),
+        ),
+        // 바둑판 패널
+        if (_showStationPanel)
+          Container(
+            constraints: const BoxConstraints(maxHeight: 160),
+            padding: const EdgeInsets.all(8),
+            color: Colors.grey[900],
+            child: SingleChildScrollView(
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: _baseStationsWithCoords.map((station) {
+                  final isSelected = _selectedStation?.no == station.no;
+                  final label = _shortStationNo(station.no);
+                  return GestureDetector(
+                    onTap: () {
+                      _goToStation(station);
+                      setState(() => _showStationPanel = false);
+                    },
+                    child: Container(
+                      width: 40,
+                      height: 32,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: isSelected ? Colors.cyan : Colors.grey[700],
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        label,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: isSelected ? Colors.black : Colors.white70,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                        ),
+                      ),
                     ),
                   );
                 }).toList(),
-                onChanged: (stationNo) {
-                  if (stationNo == null) return;
-                  final station = _stationsWithCoords.firstWhere((s) => s.no == stationNo);
-                  _goToStation(station);
-                },
               ),
             ),
           ),
-          if (_selectedStation != null)
-            IconButton(
-              icon: const Icon(Icons.clear, color: Colors.white70, size: 20),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(),
-              onPressed: () {
-                setState(() {
-                  _selectedStation = null;
-                  _zoom = 1.0;
-                  _offset = Offset.zero;
-                });
-              },
-            ),
-        ],
-      ),
+      ],
     );
   }
 
@@ -511,26 +930,66 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
               setState(() => _showLayerPanel = !_showLayerPanel);
             },
           ),
-          // 슬롯 3: 빈 슬롯
+          // 슬롯 3: 치수 측정 (롱프레스 → 타입 선택)
           _buildToolbarButton(
-            icon: Icons.more_horiz,
-            label: '',
-            enabled: false,
-            onPressed: () {},
+            icon: _getDimTypeIcon(_activeDimType),
+            label: _getDimTypeLabel(_activeDimType),
+            isActive: _isDimensionMode,
+            onPressed: () {
+              setState(() {
+                _isDimensionMode = !_isDimensionMode;
+                if (_isDimensionMode) {
+                  _isPointMode = false;
+                  _touchPoint = null;
+                  _activeSnap = null;
+                  _highlightEntity = null;
+                  _showDimPanel = false;
+                  _showDimStylePanel = false;
+                }
+                if (!_isDimensionMode) {
+                  _dimFirstPoint = null;
+                  _dimSecondPoint = null;
+                  _dimPending = null;
+                  _dimPlacementDxf = null;
+                  _cursorTipDxf = null;
+                  _touchPoint = null;
+                  _activeSnap = null;
+                  _highlightEntity = null;
+                }
+              });
+            },
+            onLongPress: _showDimTypeMenu,
           ),
-          // 슬롯 4: 빈 슬롯
+          // 슬롯 4: 치수 목록
           _buildToolbarButton(
-            icon: Icons.more_horiz,
-            label: '',
-            enabled: false,
-            onPressed: () {},
+            icon: Icons.list_alt,
+            label: '목록',
+            isActive: _showDimPanel,
+            badge: _dimResults.isNotEmpty ? '${_dimResults.length}' : null,
+            onPressed: () {
+              setState(() {
+                _showDimPanel = !_showDimPanel;
+                if (_showDimPanel) {
+                  _showLayerPanel = false;
+                  _showDimStylePanel = false;
+                }
+              });
+            },
           ),
-          // 슬롯 5: 빈 슬롯
+          // 슬롯 5: 치수 설정
           _buildToolbarButton(
-            icon: Icons.more_horiz,
-            label: '',
-            enabled: false,
-            onPressed: () {},
+            icon: Icons.palette,
+            label: '설정',
+            isActive: _showDimStylePanel,
+            onPressed: () {
+              setState(() {
+                _showDimStylePanel = !_showDimStylePanel;
+                if (_showDimStylePanel) {
+                  _showLayerPanel = false;
+                  _showDimPanel = false;
+                }
+              });
+            },
           ),
         ],
       ),
@@ -541,6 +1000,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     required IconData icon,
     required String label,
     required VoidCallback onPressed,
+    VoidCallback? onLongPress,
     bool isActive = false,
     bool enabled = true,
     String? badge,
@@ -548,6 +1008,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     return Expanded(
       child: InkWell(
         onTap: enabled ? onPressed : null,
+        onLongPress: enabled ? onLongPress : null,
         child: Stack(
           alignment: Alignment.center,
           children: [
@@ -604,6 +1065,55 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
+
+        // 화면 크기 변경 감지 (폴드 접기/펼치기 등)
+        // 이전 화면 중앙의 DXF 좌표를 유지하도록 offset 재계산
+        if (_lastCanvasSize != null &&
+            _dxfData != null &&
+            (_lastCanvasSize!.width - canvasSize.width).abs() > 1.0) {
+          final oldSize = _lastCanvasSize!;
+          final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
+          final minX = bounds['minX'] as double;
+          final minY = bounds['minY'] as double;
+          final maxX = bounds['maxX'] as double;
+          final maxY = bounds['maxY'] as double;
+          final dxfW = maxX - minX;
+          final dxfH = maxY - minY;
+          if (dxfW > 0 && dxfH > 0) {
+            // 이전 화면 중앙의 DXF 좌표
+            final oldSX = oldSize.width * 0.9 / dxfW;
+            final oldSY = oldSize.height * 0.9 / dxfH;
+            final oldBase = oldSX < oldSY ? oldSX : oldSY;
+            final oldScale = oldBase * _zoom;
+            final oldCOffX = (oldSize.width - dxfW * oldScale) / 2;
+            final oldCOffY = (oldSize.height - dxfH * oldScale) / 2;
+            final cx = oldSize.width / 2;
+            final cy = oldSize.height / 2;
+            final dxfX = (cx - oldCOffX - _offset.dx) / oldScale + minX;
+            final dxfY = (oldSize.height - cy - oldCOffY - _offset.dy) / oldScale + minY;
+
+            // 새 화면에서 같은 DXF 좌표가 중앙에 오도록 offset 계산
+            final newSX = canvasSize.width * 0.9 / dxfW;
+            final newSY = canvasSize.height * 0.9 / dxfH;
+            final newBase = newSX < newSY ? newSX : newSY;
+            final newScale = newBase * _zoom;
+            final newCOffX = (canvasSize.width - dxfW * newScale) / 2;
+            final newCOffY = (canvasSize.height - dxfH * newScale) / 2;
+            final newCx = canvasSize.width / 2;
+            final newCy = canvasSize.height / 2;
+            _offset = Offset(
+              newCx - (dxfX - minX) * newScale - newCOffX,
+              canvasSize.height - newCy - (dxfY - minY) * newScale - newCOffY,
+            );
+          }
+          // 화면 크기 변경 시 제스처 상태 초기화
+          _lastZoom = _zoom;
+          _lastFocalPoint = Offset.zero;
+          _isZoomWindowMode = false;
+          _zoomWindowStart = null;
+          _zoomWindowEnd = null;
+        }
+
         _lastCanvasSize = canvasSize;
 
         return Stack(
@@ -611,7 +1121,18 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
             // 도면 캔버스
             GestureDetector(
               onScaleStart: (details) {
-                if (_isPointMode) {
+                // 열린 패널 닫기
+                if (_showLayerPanel || _showStationPanel) {
+                  setState(() {
+                    _showLayerPanel = false;
+                    _showStationPanel = false;
+                  });
+                  return;
+                }
+                if (_isDimensionMode && _dimPending != null) {
+                  // 치수 배치 단계: 스냅 없이 드래그
+                  _handleDimPlacement(details.localFocalPoint, canvasSize);
+                } else if (_isPointMode || _isDimensionMode) {
                   _handlePointTouch(details.localFocalPoint, canvasSize);
                 } else if (_isZoomWindowMode) {
                   setState(() {
@@ -620,10 +1141,14 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   });
                 } else {
                   _lastFocalPoint = details.focalPoint;
+                  _lastZoom = _zoom;
                 }
               },
               onScaleUpdate: (details) {
-                if (_isPointMode) {
+                if (_isDimensionMode && _dimPending != null) {
+                  // 치수 배치 단계: 드래그로 위치 조절
+                  _handleDimPlacement(details.localFocalPoint, canvasSize);
+                } else if (_isPointMode || _isDimensionMode) {
                   _handlePointTouch(details.localFocalPoint, canvasSize);
                 } else if (_isZoomWindowMode) {
                   setState(() {
@@ -631,34 +1156,98 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   });
                 } else {
                   setState(() {
-                    if (details.scale != 1.0) {
-                      _zoom *= details.scale;
-                    }
+                    // 팬 처리
                     final delta = details.focalPoint - _lastFocalPoint;
                     _offset += Offset(delta.dx, -delta.dy);
                     _lastFocalPoint = details.focalPoint;
+
+                    // 핀치 줌 - 손가락 중심 기준
+                    if (details.scale != 1.0) {
+                      final newZoom = _lastZoom * details.scale;
+                      final focalLocal = details.localFocalPoint;
+
+                      // 현재 focal point의 DXF 좌표 계산
+                      final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
+                      final minX = bounds['minX'] as double;
+                      final minY = bounds['minY'] as double;
+                      final maxX = bounds['maxX'] as double;
+                      final maxY = bounds['maxY'] as double;
+                      final dxfW = maxX - minX;
+                      final dxfH = maxY - minY;
+                      final sX = canvasSize.width * 0.9 / dxfW;
+                      final sY = canvasSize.height * 0.9 / dxfH;
+                      final baseScale = sX < sY ? sX : sY;
+
+                      final oldScale = baseScale * _zoom;
+                      final cOffX = (canvasSize.width - dxfW * oldScale) / 2;
+                      final cOffY = (canvasSize.height - dxfH * oldScale) / 2;
+                      final dxfX = (focalLocal.dx - cOffX - _offset.dx) / oldScale + minX;
+                      final dxfY = (canvasSize.height - focalLocal.dy - cOffY - _offset.dy) / oldScale + minY;
+
+                      // 새 줌에서 같은 DXF 좌표가 같은 화면 위치에 오도록 오프셋 조정
+                      final newScale = baseScale * newZoom;
+                      final newCOffX = (canvasSize.width - dxfW * newScale) / 2;
+                      final newCOffY = (canvasSize.height - dxfH * newScale) / 2;
+                      _offset = Offset(
+                        focalLocal.dx - (dxfX - minX) * newScale - newCOffX,
+                        canvasSize.height - focalLocal.dy - (dxfY - minY) * newScale - newCOffY,
+                      );
+                      _zoom = newZoom;
+                    }
                   });
                 }
               },
               onScaleEnd: (details) {
-                if (_isPointMode) {
-                  // 터치 뗐을 때 스냅이 있으면 확정
-                  if (_activeSnap != null) {
-                    setState(() {
+                if (_isDimensionMode) {
+                  setState(() {
+                    if (_dimPending != null) {
+                      // 배치 확정 → 결과에 추가
+                      final p = _dimPending!;
+                      _dimResults.add(DimensionResult(
+                        id: DimensionResult.generateId(),
+                        type: p.type,
+                        x1: p.x1, y1: p.y1,
+                        x2: p.x2, y2: p.y2,
+                        x3: p.x3, y3: p.y3,
+                        value: p.value,
+                        offsetX: _dimPlacementDxf!.dx,
+                        offsetY: _dimPlacementDxf!.dy,
+                        style: _dimStyle,
+                      ));
+                      _dimPending = null;
+                      _dimPlacementDxf = null;
+                      _dimFirstPoint = null;
+                      _dimSecondPoint = null;
+                      _isDimensionMode = false;
+                    } else if (_activeSnap != null) {
+                      _handleDimSnapConfirm();
+                    }
+                    _touchPoint = null;
+                    _activeSnap = null;
+                    _highlightEntity = null;
+                    _cursorTipDxf = null;
+                  });
+                } else if (_isPointMode) {
+                  // 포인트 모드: 스냅 있으면 확정, 없으면 커서만 제거
+                  setState(() {
+                    if (_activeSnap != null) {
                       _confirmedPoints.add((
                         type: _activeSnap!.type,
                         dxfX: _activeSnap!.dxfX,
                         dxfY: _activeSnap!.dxfY,
                       ));
-                      // 포인트 모드 해제 + 커서 숨기기
                       _isPointMode = false;
-                      _touchPoint = null;
-                      _activeSnap = null;
-                      _highlightEntity = null;
-                    });
-                  }
+                    }
+                    _touchPoint = null;
+                    _activeSnap = null;
+                    _highlightEntity = null;
+                    _cursorTipDxf = null;
+                  });
                 } else if (_isZoomWindowMode && _zoomWindowStart != null && _zoomWindowEnd != null) {
                   _applyZoomWindow();
+                } else {
+                  // 팬/줌 끝 → 가장 가까운 측점 싱크
+                  _syncNearestStation(canvasSize);
                 }
               },
               child: Stack(
@@ -691,8 +1280,23 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         transformPoint: _getTransformPoint(canvasSize),
                       ),
                     ),
-                  // 포인트 지정 커서 + 스냅 오버레이
-                  if (_isPointMode && _touchPoint != null)
+                  // 치수 측정 결과 (치수선 + 거리 + 보조선)
+                  if (_dimResults.isNotEmpty || _dimFirstPoint != null || _dimPending != null)
+                    CustomPaint(
+                      size: Size.infinite,
+                      painter: DimensionPainter(
+                        results: _dimResults,
+                        firstPoint: _dimFirstPoint,
+                        secondPoint: _dimSecondPoint,
+                        pending: _dimPending,
+                        placementDxf: _dimPlacementDxf,
+                        transformPoint: _getTransformPoint(canvasSize),
+                        defaultStyle: _dimStyle,
+                        selectedDimIndex: _selectedDimIndex,
+                      ),
+                    ),
+                  // 포인트/치수 모드 커서 + 스냅 오버레이 (배치 단계에서는 숨김)
+                  if ((_isPointMode || _isDimensionMode) && _touchPoint != null && _dimPending == null)
                     CustomPaint(
                       size: Size.infinite,
                       painter: SnapOverlayPainter(
@@ -703,11 +1307,24 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         scale: _getCurrentScale(canvasSize),
                       ),
                     ),
+                  // 확대 원 (치수/포인트 모드 터치 중, 배치 단계 제외)
+                  if ((_isDimensionMode || _isPointMode) && _touchPoint != null && _cursorTipDxf != null && _dimPending == null)
+                    CustomPaint(
+                      size: Size.infinite,
+                      painter: MagnificationPainter(
+                        cursorTipDxf: _cursorTipDxf!,
+                        entities: _dxfData!['entities'] as List,
+                        bounds: _dxfData!['bounds'] as Map<String, dynamic>,
+                        hiddenLayers: _hiddenLayers,
+                        zoom: _zoom,
+                        activeSnap: _activeSnap,
+                      ),
+                    ),
                 ],
               ),
             ),
-            // 포인트 모드 안내 표시
-            if (_isPointMode)
+            // 포인트/치수 모드 안내 표시
+            if (_isPointMode || _isDimensionMode)
               Positioned(
                 top: 8,
                 left: 0,
@@ -716,13 +1333,15 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
-                      color: Colors.cyan.withValues(alpha: 0.85),
+                      color: (_isDimensionMode ? Colors.orange : Colors.cyan).withValues(alpha: 0.85),
                       borderRadius: BorderRadius.circular(16),
                     ),
                     child: Text(
-                      _activeSnap != null
-                          ? '${_snapTypeName(_activeSnap!.type)}  (${_activeSnap!.dxfX.toStringAsFixed(3)}, ${_activeSnap!.dxfY.toStringAsFixed(3)})'
-                          : '포인트 지정 모드 - 도면을 터치하세요',
+                      _isDimensionMode
+                          ? _getDimensionBannerText()
+                          : _activeSnap != null
+                              ? '${_snapTypeName(_activeSnap!.type)}  (${_activeSnap!.dxfX.toStringAsFixed(3)}, ${_activeSnap!.dxfY.toStringAsFixed(3)})'
+                              : '포인트 지정 모드 - 도면을 터치하세요',
                       style: const TextStyle(
                         color: Colors.black,
                         fontSize: 12,
@@ -734,6 +1353,10 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
               ),
             // 레이어 패널 (하단에서 슬라이드 업)
             if (_showLayerPanel) _buildLayerPanel(),
+            // 치수 관리 패널
+            if (_showDimPanel) _buildDimListPanel(),
+            // 치수 스타일 설정 패널
+            if (_showDimStylePanel) _buildDimStylePanel(),
           ],
         );
       },
@@ -753,6 +1376,38 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     }
   }
 
+  String _getDimensionBannerText() {
+    final typeName = _getDimTypeLabel(_activeDimType);
+
+    if (_dimPending != null) {
+      return '$typeName 배치 - 드래그하여 위치를 지정하세요';
+    }
+
+    if (_activeDimType == DimensionType.angular) {
+      if (_activeSnap != null) {
+        String prefix;
+        if (_dimFirstPoint == null) {
+          prefix = '방향점1';
+        } else if (_dimSecondPoint == null) {
+          prefix = '꼭짓점';
+        } else {
+          prefix = '방향점2';
+        }
+        return '$typeName $prefix ${_snapTypeName(_activeSnap!.type)}  (${_activeSnap!.dxfX.toStringAsFixed(3)}, ${_activeSnap!.dxfY.toStringAsFixed(3)})';
+      }
+      if (_dimFirstPoint == null) return '$typeName - 방향점1을 터치하세요';
+      if (_dimSecondPoint == null) return '$typeName - 꼭짓점을 터치하세요';
+      return '$typeName - 방향점2를 터치하세요';
+    }
+
+    if (_activeSnap != null) {
+      final prefix = _dimFirstPoint == null ? '1점' : '2점';
+      return '$typeName $prefix ${_snapTypeName(_activeSnap!.type)}  (${_activeSnap!.dxfX.toStringAsFixed(3)}, ${_activeSnap!.dxfY.toStringAsFixed(3)})';
+    }
+    if (_dimFirstPoint == null) return '$typeName - 첫번째 점을 터치하세요';
+    return '$typeName - 두번째 점을 터치하세요';
+  }
+
   /// 레이어 제어 패널 (하단에서 올라오는 패널)
   Widget _buildLayerPanel() {
     final layers = _layers;
@@ -768,11 +1423,11 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
           maxHeight: MediaQuery.of(context).size.height * 0.4,
         ),
         decoration: BoxDecoration(
-          color: Colors.grey[900]!.withOpacity(0.95),
+          color: Colors.grey[900]!.withValues(alpha: 0.95),
           borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.4),
+              color: Colors.black.withValues(alpha: 0.4),
               blurRadius: 8,
               offset: const Offset(0, -2),
             ),
@@ -902,6 +1557,340 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       ),
     );
   }
+
+  /// 치수 관리 패널
+  Widget _buildDimListPanel() {
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.4,
+        ),
+        decoration: BoxDecoration(
+          color: Colors.grey[900]!.withValues(alpha: 0.95),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.4),
+              blurRadius: 8,
+              offset: const Offset(0, -2),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 헤더
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                border: Border(bottom: BorderSide(color: Colors.grey[700]!, width: 0.5)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.straighten, color: Colors.orange, size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    '치수 목록 (${_dimResults.length}개)',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (_dimResults.isNotEmpty)
+                    TextButton(
+                      onPressed: _deleteAllDimensions,
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text('전체 삭제', style: TextStyle(fontSize: 12, color: Colors.red)),
+                    ),
+                  const SizedBox(width: 8),
+                  GestureDetector(
+                    onTap: () => setState(() => _showDimPanel = false),
+                    child: const Icon(Icons.close, color: Colors.white54, size: 20),
+                  ),
+                ],
+              ),
+            ),
+            // 치수 리스트
+            Flexible(
+              child: _dimResults.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text('치수 없음', style: TextStyle(color: Colors.white54)),
+                    )
+                  : ListView.builder(
+                      shrinkWrap: true,
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      itemCount: _dimResults.length,
+                      itemBuilder: (context, index) {
+                        final dim = _dimResults[index];
+                        final isSelected = _selectedDimIndex == index;
+                        return InkWell(
+                          onTap: () {
+                            setState(() {
+                              _selectedDimIndex = isSelected ? null : index;
+                            });
+                          },
+                          child: Container(
+                            color: isSelected ? Colors.cyan.withValues(alpha: 0.15) : null,
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  _getDimTypeIcon(dim.type),
+                                  size: 18,
+                                  color: dim.style.color,
+                                ),
+                                const SizedBox(width: 10),
+                                Text(
+                                  _getDimTypeLabel(dim.type),
+                                  style: TextStyle(
+                                    color: Colors.grey[400],
+                                    fontSize: 11,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    dim.type == DimensionType.angular
+                                        ? '${dim.value.toStringAsFixed(dim.style.decimalPlaces)}\u00B0'
+                                        : dim.value.toStringAsFixed(dim.style.decimalPlaces),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                                GestureDetector(
+                                  onTap: () => _deleteDimension(index),
+                                  child: Icon(Icons.delete_outline, size: 18, color: Colors.red[300]),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 치수 스타일 설정 패널
+  Widget _buildDimStylePanel() {
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.grey[900]!.withValues(alpha: 0.95),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.4),
+              blurRadius: 8,
+              offset: const Offset(0, -2),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 헤더
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                border: Border(bottom: BorderSide(color: Colors.grey[700]!, width: 0.5)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.palette, color: Colors.orange, size: 20),
+                  const SizedBox(width: 8),
+                  const Text(
+                    '치수 스타일 설정',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () => setState(() => _showDimStylePanel = false),
+                    child: const Icon(Icons.close, color: Colors.white54, size: 20),
+                  ),
+                ],
+              ),
+            ),
+            // 색상 선택
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                children: [
+                  const Text('색상', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  const SizedBox(width: 12),
+                  ..._buildColorChips(),
+                ],
+              ),
+            ),
+            // 폰트 크기
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Row(
+                children: [
+                  const Text('크기', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  Expanded(
+                    child: Slider(
+                      value: _dimStyle.fontSize,
+                      min: 8,
+                      max: 24,
+                      divisions: 16,
+                      label: _dimStyle.fontSize.toInt().toString(),
+                      onChanged: (v) => setState(() => _dimStyle = _dimStyle.copyWith(fontSize: v)),
+                    ),
+                  ),
+                  Text(
+                    '${_dimStyle.fontSize.toInt()}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            // 소수점 자릿수
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Row(
+                children: [
+                  const Text('소수점', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  const SizedBox(width: 12),
+                  ...List.generate(4, (i) {
+                    final isActive = _dimStyle.decimalPlaces == i;
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: GestureDetector(
+                        onTap: () => setState(() => _dimStyle = _dimStyle.copyWith(decimalPlaces: i)),
+                        child: Container(
+                          width: 32,
+                          height: 28,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: isActive ? Colors.cyan : Colors.grey[700],
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            '$i',
+                            style: TextStyle(
+                              color: isActive ? Colors.black : Colors.white70,
+                              fontSize: 12,
+                              fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+            // 화살표 스타일
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                children: [
+                  const Text('화살표', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  const SizedBox(width: 12),
+                  ..._buildArrowStyleChips(),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildColorChips() {
+    const colors = [
+      (Color(0xFFFFFF00), '노랑'),
+      (Color(0xFFFF0000), '빨강'),
+      (Color(0xFF00FF00), '초록'),
+      (Color(0xFF00FFFF), '청록'),
+      (Color(0xFFFFFFFF), '흰색'),
+      (Color(0xFFFF8000), '주황'),
+    ];
+    return colors.map((entry) {
+      final isActive = _dimStyle.color.toARGB32() == entry.$1.toARGB32();
+      return Padding(
+        padding: const EdgeInsets.only(right: 6),
+        child: GestureDetector(
+          onTap: () => setState(() => _dimStyle = _dimStyle.copyWith(color: entry.$1)),
+          child: Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: entry.$1,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: isActive ? Colors.white : Colors.transparent,
+                width: 2,
+              ),
+            ),
+            child: isActive
+                ? const Icon(Icons.check, size: 14, color: Colors.black)
+                : null,
+          ),
+        ),
+      );
+    }).toList();
+  }
+
+  List<Widget> _buildArrowStyleChips() {
+    const styles = [
+      (ArrowStyle.filled, '▶'),
+      (ArrowStyle.open, '▷'),
+      (ArrowStyle.tick, '╱'),
+      (ArrowStyle.dot, '●'),
+      (ArrowStyle.none, '—'),
+    ];
+    return styles.map((entry) {
+      final isActive = _dimStyle.arrowStyle == entry.$1;
+      return Padding(
+        padding: const EdgeInsets.only(right: 6),
+        child: GestureDetector(
+          onTap: () => setState(() => _dimStyle = _dimStyle.copyWith(arrowStyle: entry.$1)),
+          child: Container(
+            width: 32,
+            height: 28,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: isActive ? Colors.cyan : Colors.grey[700],
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              entry.$2,
+              style: TextStyle(
+                color: isActive ? Colors.black : Colors.white70,
+                fontSize: 14,
+              ),
+            ),
+          ),
+        ),
+      );
+    }).toList();
+  }
 }
 
 /// 영역 확대 사각형을 그리는 Painter
@@ -914,7 +1903,7 @@ class ZoomWindowPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.blue.withOpacity(0.3)
+      ..color = Colors.blue.withValues(alpha: 0.3)
       ..style = PaintingStyle.fill;
 
     final borderPaint = Paint()
