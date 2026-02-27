@@ -21,7 +21,7 @@ class _MainScreenState extends State<MainScreen> {
   List<StationData> _stations = [];
   int? _projectId;
   String _projectName = '';
-  int _decimalPlaces = 3;
+  int _decimalPlaces = 2;
   int _fontSizeDelta = 0;
 
   @override

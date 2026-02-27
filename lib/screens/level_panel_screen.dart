@@ -342,7 +342,7 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Expanded(
-            flex: 3,
+            flex: 1,
             child: TextField(
               controller: _ihController,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -357,7 +357,7 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
           ),
           const SizedBox(width: 8),
           Expanded(
-            flex: 6,
+            flex: 1,
             child: InkWell(
               onTap: _selectPlanLevelColumn,
               borderRadius: BorderRadius.circular(4),
@@ -366,13 +366,13 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
                   labelText: _planLevelColumnLabel(_selectedPlanLevelColumn),
                   border: const OutlineInputBorder(),
                   contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
-                  suffixText: _getPlanLevel()?.toStringAsFixed(widget.decimalPlaces),
+                  suffixText: 'm',
                 ),
                 child: Row(
                   children: [
                     Expanded(
                       child: Text(
-                        _planLevelColumnLabel(_selectedPlanLevelColumn),
+                        _getPlanLevel()?.toStringAsFixed(widget.decimalPlaces) ?? '---',
                         style: const TextStyle(fontSize: 14),
                         overflow: TextOverflow.ellipsis,
                       ),

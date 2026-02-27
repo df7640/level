@@ -49,7 +49,7 @@ class _DataTableScreenState extends State<DataTableScreen> {
   final TextEditingController _memoController = TextEditingController();
 
   // 표시할 컬럼 (모바일 화면에 맞게 제한)
-  List<String> _visibleColumns = ['누가거리', '지반고', '계획하상고'];
+  List<String> _visibleColumns = ['계획홍수위', '최심하상고', '노체(L)', '노체(R)'];
 
   // 사용 가능한 모든 컬럼 (표시명: 필드명)
   final Map<String, String> _availableColumns = {
@@ -73,7 +73,7 @@ class _DataTableScreenState extends State<DataTableScreen> {
   bool _showInterpolated = true;
 
   // 보기 형식 ('compact', 'card', 'table')
-  String _viewMode = 'compact';
+  String _viewMode = 'card';
 
   // 테이블 뷰 스크롤 컨트롤러
   final ScrollController _tableHeaderScrollCtrl = ScrollController();
@@ -312,23 +312,23 @@ class _DataTableScreenState extends State<DataTableScreen> {
   }
 
   Widget _buildStatItem(String label, String value, IconData icon) {
-    return Column(
+    return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 20, color: Colors.blue),
-        const SizedBox(height: 4),
+        Icon(icon, size: 16, color: Colors.blue),
+        const SizedBox(width: 4),
         Text(
-          value,
-          style: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        Text(
-          label,
+          '$label ',
           style: TextStyle(
             fontSize: 11,
             color: Colors.grey[600],
+          ),
+        ),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
           ),
         ),
       ],
@@ -590,19 +590,26 @@ class _DataTableScreenState extends State<DataTableScreen> {
       itemBuilder: (context, index) {
         final station = stations[index];
         final isPlusChain = station.no.contains('+');
-        final isSelected = _selectedStationNo == station.no;
+        final isExpanded = _expandedStationNo == station.no;
+
+        // 접힌 상태: 선택 컬럼만, 펼친 상태: 전체 컬럼
+        final columnsToShow = isExpanded
+            ? _availableColumns.keys.toList()
+            : _visibleColumns;
 
         return Card(
           margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           color: isPlusChain ? Colors.indigo[50] : null,
           shape: RoundedRectangleBorder(
-            side: isSelected
+            side: isExpanded
                 ? const BorderSide(color: Colors.blue, width: 2)
                 : BorderSide(color: Colors.grey[200]!),
             borderRadius: BorderRadius.circular(12),
           ),
           child: InkWell(
-            onTap: () => setState(() => _selectedStationNo = station.no),
+            onTap: () => setState(() {
+              _expandedStationNo = isExpanded ? null : station.no;
+            }),
             borderRadius: BorderRadius.circular(12),
             child: Padding(
               padding: const EdgeInsets.all(12),
@@ -616,13 +623,20 @@ class _DataTableScreenState extends State<DataTableScreen> {
                           ? Icon(Icons.auto_awesome, size: 18, color: Colors.indigo[300])
                           : const Icon(Icons.place, size: 18, color: Colors.blue),
                       const SizedBox(width: 8),
-                      Text(
-                        _getDisplayName(station, index),
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: isPlusChain ? Colors.indigo[700] : null,
+                      Expanded(
+                        child: Text(
+                          _getDisplayName(station, index),
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: isPlusChain ? Colors.indigo[700] : null,
+                          ),
                         ),
+                      ),
+                      Icon(
+                        isExpanded ? Icons.expand_less : Icons.expand_more,
+                        size: 20,
+                        color: Colors.grey,
                       ),
                     ],
                   ),
@@ -631,7 +645,7 @@ class _DataTableScreenState extends State<DataTableScreen> {
                   Wrap(
                     spacing: 0,
                     runSpacing: 4,
-                    children: _visibleColumns.map((columnName) {
+                    children: columnsToShow.map((columnName) {
                       final fieldName = _availableColumns[columnName];
                       if (fieldName == null) return const SizedBox.shrink();
                       final value = _getFieldValue(station, fieldName);
