@@ -76,6 +76,7 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
   final TextEditingController _ihController = TextEditingController();
   final TextEditingController _actualReadingController = TextEditingController();
   final TextEditingController _offsetController = TextEditingController(text: '0');
+  bool _offsetPositive = true; // true: +, false: -
   String _selectedPlanLevelColumn = 'GH';
   int? _selectedStationIndex;
   double? _targetReading;
@@ -341,7 +342,7 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Expanded(
-            flex: 4,
+            flex: 3,
             child: TextField(
               controller: _ihController,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -356,13 +357,13 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
           ),
           const SizedBox(width: 8),
           Expanded(
-            flex: 5,
+            flex: 6,
             child: InkWell(
               onTap: _selectPlanLevelColumn,
               borderRadius: BorderRadius.circular(4),
               child: InputDecorator(
                 decoration: InputDecoration(
-                  labelText: '계획고',
+                  labelText: _planLevelColumnLabel(_selectedPlanLevelColumn),
                   border: const OutlineInputBorder(),
                   contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
                   suffixText: _getPlanLevel()?.toStringAsFixed(widget.decimalPlaces),
@@ -495,7 +496,7 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
         children: [
           // 읽을 값 (계산 결과)
           Expanded(
-            flex: 3,
+            flex: 2,
             child: Container(
               alignment: Alignment.center,
               decoration: BoxDecoration(
@@ -514,12 +515,38 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
             ),
           ),
           const SizedBox(width: 6),
+          // 보정 +/- 토글 버튼
+          SizedBox(
+            width: _rowHeight,
+            child: Material(
+              color: _offsetPositive ? Colors.green[100] : Colors.red[100],
+              borderRadius: BorderRadius.circular(4),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(4),
+                onTap: () {
+                  setState(() => _offsetPositive = !_offsetPositive);
+                  _calculate();
+                },
+                child: Center(
+                  child: Text(
+                    _offsetPositive ? '+' : '−',
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: _offsetPositive ? Colors.green[800] : Colors.red[800],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
           // 보정값 입력
           Expanded(
             flex: 2,
             child: TextField(
               controller: _offsetController,
-              keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: const InputDecoration(
                 labelText: '보정',
                 border: OutlineInputBorder(),
@@ -533,7 +560,7 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
           const SizedBox(width: 6),
           // 읽은 값 입력
           Expanded(
-            flex: 3,
+            flex: 2,
             child: TextField(
               controller: _actualReadingController,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -545,25 +572,12 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
               onChanged: (_) => _calculate(),
             ),
           ),
-          const SizedBox(width: 6),
-          // 저장 버튼
-          SizedBox(
-            width: 44,
-            child: ElevatedButton(
-              onPressed: _canSave ? _saveReading : null,
-              style: ElevatedButton.styleFrom(
-                padding: EdgeInsets.zero,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-              ),
-              child: const Icon(Icons.save, size: 20),
-            ),
-          ),
         ],
       ),
     );
   }
 
-  /// 4행: 절/성토 결과 (컴팩트 바)
+  /// 4행: 절/성토 결과 (컴팩트 바) + 저장 버튼
   Widget _buildCutFillBar() {
     Color statusColor = Colors.grey;
     String statusText = '대기 중';
@@ -589,38 +603,56 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
       }
     }
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
-      decoration: BoxDecoration(
-        color: statusColor.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: statusColor.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(statusIcon, size: 24, color: statusColor),
-          const SizedBox(width: 8),
-          Text(
-            statusText,
-            style: TextStyle(
-              fontSize: 16 + widget.fontSizeDelta.toDouble(),
-              fontWeight: FontWeight.bold,
-              color: statusColor,
+    return Row(
+      children: [
+        Expanded(
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+            decoration: BoxDecoration(
+              color: statusColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: statusColor.withValues(alpha: 0.3)),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(statusIcon, size: 24, color: statusColor),
+                const SizedBox(width: 8),
+                Text(
+                  statusText,
+                  style: TextStyle(
+                    fontSize: 16 + widget.fontSizeDelta.toDouble(),
+                    fontWeight: FontWeight.bold,
+                    color: statusColor,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  _cutFill != null ? '${_cutFill!.toStringAsFixed(widget.decimalPlaces)} m' : '---',
+                  style: TextStyle(
+                    fontSize: 22 + widget.fontSizeDelta.toDouble(),
+                    fontWeight: FontWeight.bold,
+                    color: _cutFill != null ? statusColor : Colors.grey,
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(width: 12),
-          Text(
-            _cutFill != null ? '${_cutFill!.toStringAsFixed(widget.decimalPlaces)} m' : '---',
-            style: TextStyle(
-              fontSize: 22 + widget.fontSizeDelta.toDouble(),
-              fontWeight: FontWeight.bold,
-              color: _cutFill != null ? statusColor : Colors.grey,
+        ),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 52,
+          height: 48,
+          child: ElevatedButton(
+            onPressed: _canSave ? _saveReading : null,
+            style: ElevatedButton.styleFrom(
+              padding: EdgeInsets.zero,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
+            child: const Icon(Icons.save, size: 24),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -983,7 +1015,8 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
   void _calculate() {
     final ih = double.tryParse(_ihController.text);
     final planLevel = _getPlanLevel();
-    final offsetM = double.tryParse(_offsetController.text) ?? 0.0;
+    final offsetAbs = double.tryParse(_offsetController.text) ?? 0.0;
+    final offsetM = _offsetPositive ? offsetAbs : -offsetAbs;
     double? targetReading = LevelCalculationService.calculateTargetReading(ih, planLevel);
     if (targetReading != null && offsetM != 0.0) {
       targetReading = targetReading - offsetM;
