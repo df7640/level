@@ -2,19 +2,21 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'snap_overlay_painter.dart';
 
-/// 확대 원(Magnification Circle) Painter
-/// 커서 팁 주변 DXF 도면을 4배 확대하여 좌상단 원에 표시
+/// 확대 뷰(Magnification Box) Painter
+/// 커서 팁 주변 DXF 도면을 현재 줌 대비 3배 확대하여 좌상단 사각형에 표시
 class MagnificationPainter extends CustomPainter {
   final Offset cursorTipDxf; // 커서 팁 DXF 좌표
   final List<dynamic> entities;
   final Map<String, dynamic> bounds;
   final Set<String> hiddenLayers;
   final double zoom;
+  final double viewScale; // 도면 뷰의 현재 실제 스케일
   final SnapResult? activeSnap;
 
-  static const double _circleRadius = 75.0; // 원 반지름 (150px 지름)
+  static const double _boxSize = 150.0; // 사각형 크기
+  static const double _boxRadius = 8.0; // 라운드 코너
   static const double _margin = 16.0;
-  static const double _magFactor = 4.0; // 확대 배율
+  static const double _magFactor = 3.0; // 도면 뷰 대비 추가 확대 배율
 
   MagnificationPainter({
     required this.cursorTipDxf,
@@ -22,27 +24,30 @@ class MagnificationPainter extends CustomPainter {
     required this.bounds,
     required this.hiddenLayers,
     required this.zoom,
+    required this.viewScale,
     this.activeSnap,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = const Offset(_margin + _circleRadius, _margin + _circleRadius);
+    final halfSize = _boxSize / 2;
+    final center = Offset(_margin + halfSize, _margin + halfSize);
+    final boxRect = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: center, width: _boxSize, height: _boxSize),
+      Radius.circular(_boxRadius),
+    );
 
-    // 배경 원 (어두운 배경)
-    canvas.drawCircle(
-      center,
-      _circleRadius,
+    // 배경 사각형 (어두운 배경)
+    canvas.drawRRect(
+      boxRect,
       Paint()..color = Colors.grey[900]!,
     );
 
     // 클리핑
     canvas.save();
-    canvas.clipPath(Path()..addOval(
-      Rect.fromCircle(center: center, radius: _circleRadius),
-    ));
+    canvas.clipRRect(boxRect);
 
-    // DXF 좌표계 → 확대 원 좌표계 변환 생성
+    // DXF 좌표계 → 확대 뷰 좌표계 변환 생성
     final minX = bounds['minX'] as double;
     final minY = bounds['minY'] as double;
     final maxX = bounds['maxX'] as double;
@@ -54,44 +59,35 @@ class MagnificationPainter extends CustomPainter {
       return;
     }
 
-    // 확대 원 내부의 스케일: 현재 뷰의 4배 확대
-    final viewScaleX = (_circleRadius * 2) * 0.9 / dxfW;
-    final viewScaleY = (_circleRadius * 2) * 0.9 / dxfH;
-    final viewBaseScale = viewScaleX < viewScaleY ? viewScaleX : viewScaleY;
-    final magScale = viewBaseScale * zoom * _magFactor;
+    // 확대 뷰 내부의 스케일: 도면 뷰의 실제 스케일 × 3배
+    final magScale = viewScale * _magFactor;
 
-    // 커서 팁 DXF 좌표가 원 중심에 오도록 오프셋 계산
-    // magScreenX = (dxfX - minX) * magScale + magCenterOffX + magOffsetDx
-    // magScreenY = circleH - ((dxfY - minY) * magScale + magCenterOffY + magOffsetDy)
-    // 원 중심에 cursorTipDxf가 오려면:
-    // center.dx = (cursorTipDxf.dx - minX) * magScale + magCenterOffX + magOffsetDx
-    final circleH = _circleRadius * 2;
-    final magCenterOffX = (circleH - dxfW * magScale) / 2;
-    final magCenterOffY = (circleH - dxfH * magScale) / 2;
+    // 커서 팁 DXF 좌표가 중심에 오도록 오프셋 계산
+    final magCenterOffX = (_boxSize - dxfW * magScale) / 2;
+    final magCenterOffY = (_boxSize - dxfH * magScale) / 2;
     final magOffsetDx = center.dx - (cursorTipDxf.dx - minX) * magScale - magCenterOffX;
-    final magOffsetDy = (_margin + circleH) - center.dy - (cursorTipDxf.dy - minY) * magScale - magCenterOffY;
+    final magOffsetDy = (_margin + _boxSize) - center.dy - (cursorTipDxf.dy - minY) * magScale - magCenterOffY;
 
     // 변환 함수
     Offset magTransform(double x, double y) {
       final sx = (x - minX) * magScale + magCenterOffX + magOffsetDx;
-      final sy = (_margin + circleH) - ((y - minY) * magScale + magCenterOffY + magOffsetDy);
+      final sy = (_margin + _boxSize) - ((y - minY) * magScale + magCenterOffY + magOffsetDy);
       return Offset(sx, sy);
     }
 
-    // 확대 원에 보이는 DXF 좌표 범위 계산 (필터링용)
-    final visibleDxfMinX = cursorTipDxf.dx - _circleRadius / magScale;
-    final visibleDxfMaxX = cursorTipDxf.dx + _circleRadius / magScale;
-    final visibleDxfMinY = cursorTipDxf.dy - _circleRadius / magScale;
-    final visibleDxfMaxY = cursorTipDxf.dy + _circleRadius / magScale;
+    // 확대 뷰에 보이는 DXF 좌표 범위 계산 (필터링용)
+    final visibleDxfMinX = cursorTipDxf.dx - halfSize / magScale;
+    final visibleDxfMaxX = cursorTipDxf.dx + halfSize / magScale;
+    final visibleDxfMinY = cursorTipDxf.dy - halfSize / magScale;
+    final visibleDxfMaxY = cursorTipDxf.dy + halfSize / magScale;
 
     // 엔티티 렌더링
-    final strokeWidth = 1.5;
+    const strokeWidth = 1.5;
     for (final entity in entities) {
       final type = entity['type'] as String;
       final layer = entity['layer'] as String?;
       if (layer != null && hiddenLayers.contains(layer)) continue;
 
-      // 간단한 바운딩 체크로 범위 밖 엔티티 건너뛰기
       if (!_isEntityInRange(entity, type, visibleDxfMinX, visibleDxfMaxX, visibleDxfMinY, visibleDxfMaxY)) {
         continue;
       }
@@ -121,7 +117,7 @@ class MagnificationPainter extends CustomPainter {
       }
     }
 
-    // 스냅 마커 표시 (확대 원 내부)
+    // 스냅 마커 표시
     if (activeSnap != null) {
       final snapPos = magTransform(activeSnap!.dxfX, activeSnap!.dxfY);
       _drawSnapMarkerInMag(canvas, snapPos, activeSnap!.type);
@@ -144,10 +140,9 @@ class MagnificationPainter extends CustomPainter {
 
     canvas.restore();
 
-    // 원 테두리
-    canvas.drawCircle(
-      center,
-      _circleRadius,
+    // 사각형 테두리
+    canvas.drawRRect(
+      boxRect,
       Paint()
         ..color = Colors.white70
         ..strokeWidth = 2.0

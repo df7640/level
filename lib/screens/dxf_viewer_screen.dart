@@ -1,11 +1,14 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import '../models/dimension_data.dart';
 import '../models/station_data.dart';
+import '../services/bluetooth_gnss_service.dart';
 import '../services/dxf_service.dart';
 import '../services/snap_service.dart';
 import '../widgets/dxf_painter.dart';
 import '../widgets/dimension_painter.dart';
+import '../widgets/gps_position_painter.dart';
 import '../widgets/magnification_painter.dart';
 import '../widgets/snap_overlay_painter.dart';
 
@@ -71,6 +74,12 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   bool _showDimStylePanel = false; // 스타일 설정 패널
   Offset? _cursorTipDxf; // 커서 팁 DXF 좌표 (확대 원용)
 
+  bool _edgePanDone = false; // 가장자리 자동패닝 1회 제한
+
+  // GPS
+  final BluetoothGnssService _gnssService = BluetoothGnssService();
+  bool _showGpsOverlay = false; // GPS 상태 오버레이
+
   /// 좌표가 있는 측점만 필터
   List<StationData> get _stationsWithCoords =>
       widget.stations.where((s) => s.x != null && s.y != null).toList();
@@ -88,6 +97,145 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   void initState() {
     super.initState();
     _loadSampleDxf();
+    _gnssService.addListener(_onGnssUpdate);
+  }
+
+  @override
+  void dispose() {
+    _gnssService.removeListener(_onGnssUpdate);
+    _gnssService.dispose();
+    super.dispose();
+  }
+
+  void _onGnssUpdate() {
+    if (mounted) setState(() {});
+  }
+
+  /// GPS 아이콘 색상
+  Color _getGpsIconColor() {
+    switch (_gnssService.connectionState) {
+      case GnssConnectionState.connected:
+        final fix = _gnssService.position?.fixQuality ?? 0;
+        if (fix == 4) return Colors.green;
+        if (fix == 5) return Colors.yellow;
+        if (fix >= 1) return Colors.orange;
+        return Colors.red;
+      case GnssConnectionState.connecting:
+        return Colors.yellow;
+      case GnssConnectionState.error:
+        return Colors.red;
+      case GnssConnectionState.disconnected:
+        return Colors.white54;
+    }
+  }
+
+  /// GPS 토글 (연결/해제)
+  void _toggleGps() {
+    if (_gnssService.connectionState == GnssConnectionState.connected ||
+        _gnssService.connectionState == GnssConnectionState.connecting) {
+      _gnssService.disconnect();
+    } else {
+      _showBluetoothDeviceDialog();
+    }
+  }
+
+  /// 페어링된 블루투스 기기 선택 다이얼로그
+  Future<void> _showBluetoothDeviceDialog() async {
+    final devices = await _gnssService.getPairedDevices();
+
+    if (!mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.grey[900],
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text(
+                  '블루투스 GNSS 기기 선택',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              if (devices.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Text(
+                    '페어링된 기기가 없습니다.\n설정에서 먼저 블루투스 페어링을 해주세요.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white54),
+                  ),
+                )
+              else
+                ...devices.map((device) => ListTile(
+                      leading: const Icon(Icons.bluetooth, color: Colors.blue),
+                      title: Text(
+                        device.name ?? '알 수 없는 기기',
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      subtitle: Text(
+                        device.address,
+                        style: const TextStyle(color: Colors.white38, fontSize: 12),
+                      ),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _gnssService.connect(device);
+                      },
+                    )),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// GPS 현재 위치로 이동 (롱프레스)
+  void _goToGpsPosition() {
+    final pos = _gnssService.position;
+    if (pos == null || _dxfData == null || _lastCanvasSize == null) return;
+
+    final canvasSize = _lastCanvasSize!;
+    final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
+    final minX = bounds['minX'] as double;
+    final minY = bounds['minY'] as double;
+    final maxX = bounds['maxX'] as double;
+    final maxY = bounds['maxY'] as double;
+    final dxfWidth = maxX - minX;
+    final dxfHeight = maxY - minY;
+    if (dxfWidth <= 0 || dxfHeight <= 0) return;
+
+    final scaleX = canvasSize.width * 0.9 / dxfWidth;
+    final scaleY = canvasSize.height * 0.9 / dxfHeight;
+    final baseScale = scaleX < scaleY ? scaleX : scaleY;
+
+    // 적절한 줌 레벨로 설정
+    const targetZoom = 8.0;
+    final scale = baseScale * targetZoom;
+    final centerOffsetX = (canvasSize.width - dxfWidth * scale) / 2;
+    final centerOffsetY = (canvasSize.height - dxfHeight * scale) / 2;
+
+    // GPS TM 좌표가 화면 중앙에 오도록 오프셋 계산
+    final screenX = (pos.tmX - minX) * scale + centerOffsetX;
+    final screenY = canvasSize.height - ((pos.tmY - minY) * scale + centerOffsetY);
+
+    setState(() {
+      _zoom = targetZoom;
+      _offset = Offset(
+        canvasSize.width / 2 - screenX,
+        -(screenY - canvasSize.height / 2),
+      );
+    });
   }
 
   /// 영역 확대 적용
@@ -678,6 +826,14 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     final transformPoint = _getTransformPoint(canvasSize);
     if (transformPoint == null || _dxfData == null) return;
 
+    // 우측 가장자리 자동 패닝: 터치가 화면 우측 60px 이내이면 뷰를 좌측으로 1회 이동
+    const edgeThreshold = 60.0;
+    if (!_edgePanDone && touchPoint.dx > canvasSize.width - edgeThreshold) {
+      final panAmount = canvasSize.width / 10;
+      _offset = Offset(_offset.dx - panAmount, _offset.dy);
+      _edgePanDone = true;
+    }
+
     final cursorTip = SnapOverlayPainter.getCursorTip(touchPoint);
     final scale = _getCurrentScale(canvasSize);
 
@@ -747,6 +903,19 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       appBar: AppBar(
         title: const Text('DXF 도면'),
         actions: [
+          // GPS 연결 버튼
+          GestureDetector(
+            onLongPress: _goToGpsPosition,
+            child: IconButton(
+              icon: Icon(
+                _gnssService.connectionState == GnssConnectionState.connected
+                    ? Icons.gps_fixed
+                    : Icons.gps_off,
+                color: _getGpsIconColor(),
+              ),
+              onPressed: _toggleGps,
+            ),
+          ),
           IconButton(
             icon: Icon(
               Icons.zoom_in,
@@ -1198,6 +1367,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                 }
               },
               onScaleEnd: (details) {
+                _edgePanDone = false; // 자동패닝 플래그 리셋
                 if (_isDimensionMode) {
                   setState(() {
                     if (_dimPending != null) {
@@ -1221,6 +1391,13 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                       _isDimensionMode = false;
                     } else if (_activeSnap != null) {
                       _handleDimSnapConfirm();
+                    } else {
+                      // 스냅 없이 손 뗌 → 취소: 중간 상태 초기화, 모드 비활성
+                      _dimPending = null;
+                      _dimPlacementDxf = null;
+                      _dimFirstPoint = null;
+                      _dimSecondPoint = null;
+                      _isDimensionMode = false;
                     }
                     _touchPoint = null;
                     _activeSnap = null;
@@ -1228,7 +1405,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                     _cursorTipDxf = null;
                   });
                 } else if (_isPointMode) {
-                  // 포인트 모드: 스냅 있으면 확정, 없으면 커서만 제거
+                  // 포인트 모드: 스냅 성공이든 취소든 모드 비활성
                   setState(() {
                     if (_activeSnap != null) {
                       _confirmedPoints.add((
@@ -1236,8 +1413,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         dxfX: _activeSnap!.dxfX,
                         dxfY: _activeSnap!.dxfY,
                       ));
-                      _isPointMode = false;
                     }
+                    _isPointMode = false;
                     _touchPoint = null;
                     _activeSnap = null;
                     _highlightEntity = null;
@@ -1280,6 +1457,17 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         transformPoint: _getTransformPoint(canvasSize),
                       ),
                     ),
+                  // GPS 위치 마커
+                  if (_gnssService.position != null && _getTransformPoint(canvasSize) != null)
+                    CustomPaint(
+                      size: Size.infinite,
+                      painter: GpsPositionPainter(
+                        tmX: _gnssService.position!.tmX,
+                        tmY: _gnssService.position!.tmY,
+                        fixQuality: _gnssService.position!.fixQuality,
+                        transformPoint: _getTransformPoint(canvasSize)!,
+                      ),
+                    ),
                   // 치수 측정 결과 (치수선 + 거리 + 보조선)
                   if (_dimResults.isNotEmpty || _dimFirstPoint != null || _dimPending != null)
                     CustomPaint(
@@ -1317,6 +1505,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         bounds: _dxfData!['bounds'] as Map<String, dynamic>,
                         hiddenLayers: _hiddenLayers,
                         zoom: _zoom,
+                        viewScale: _getCurrentScale(MediaQuery.of(context).size),
                         activeSnap: _activeSnap,
                       ),
                     ),

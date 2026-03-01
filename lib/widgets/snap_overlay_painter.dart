@@ -37,7 +37,7 @@ class SnapOverlayPainter extends CustomPainter {
   // 커서 설정
   static const double _cursorLineLengthCm = 3.0; // 3cm
   static const double _cursorAngleDeg = 120.0; // 11시 방향 (120도)
-  static const double _arrowHeadSize = 10.0; // 화살촉 크기 (px)
+  static const double _arrowHeadSize = 20.0; // 화살촉 크기 (px)
   static const double _snapMarkerSize = 12.0; // 스냅 표식 크기 (px)
 
   SnapOverlayPainter({
@@ -83,7 +83,7 @@ class SnapOverlayPainter extends CustomPainter {
     // 커서 라인
     final cursorPaint = Paint()
       ..color = Colors.yellowAccent
-      ..strokeWidth = 2.0
+      ..strokeWidth = 1.0
       ..style = PaintingStyle.stroke;
 
     canvas.drawLine(touch, tipPoint, cursorPaint);
@@ -103,7 +103,7 @@ class SnapOverlayPainter extends CustomPainter {
 
     final arrowPaint = Paint()
       ..color = Colors.yellowAccent
-      ..strokeWidth = 2.0
+      ..strokeWidth = 1.0
       ..style = PaintingStyle.stroke;
 
     canvas.drawLine(tipPoint, arrow1, arrowPaint);
