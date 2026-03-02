@@ -92,7 +92,7 @@ class MagnificationPainter extends CustomPainter {
         continue;
       }
 
-      final color = _getEntityColor(entity);
+      final color = Color((entity['resolvedColor'] as int?) ?? 0xFFFFFFFF);
       final paint = Paint()
         ..color = color
         ..strokeWidth = strokeWidth
@@ -196,21 +196,6 @@ class MagnificationPainter extends CustomPainter {
         return x >= minX && x <= maxX && y >= minY && y <= maxY;
       default:
         return true;
-    }
-  }
-
-  Color _getEntityColor(dynamic entity) {
-    final colorCode = entity['color'] as int?;
-    if (colorCode == null || colorCode == 0) return Colors.white;
-    switch (colorCode.abs()) {
-      case 1: return const Color(0xFFFF0000);
-      case 2: return const Color(0xFFFFFF00);
-      case 3: return const Color(0xFF00FF00);
-      case 4: return const Color(0xFF00FFFF);
-      case 5: return const Color(0xFF0000FF);
-      case 6: return const Color(0xFFFF00FF);
-      case 7: return const Color(0xFFFFFFFF);
-      default: return const Color(0xFFFFFFFF);
     }
   }
 

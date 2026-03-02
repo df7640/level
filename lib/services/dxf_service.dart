@@ -816,6 +816,86 @@ class DxfService {
     return layerColors;
   }
 
+  /// colorCode → ARGB int 변환 (파싱 시 1회만 수행)
+  static int _resolveColor(int? colorCode, String layer, Map<String, int> layerColors) {
+    int? code = colorCode;
+    if (code == null || code == 0) {
+      code = layerColors[layer];
+    }
+    if (code == null || code == 0) {
+      return _layerNameToARGB(layer);
+    }
+    return _aciToARGB(code.abs());
+  }
+
+  static int _aciToARGB(int aci) {
+    switch (aci) {
+      case 1: return 0xFFFF0000;
+      case 2: return 0xFFFFFF00;
+      case 3: return 0xFF00FF00;
+      case 4: return 0xFF00FFFF;
+      case 5: return 0xFF0000FF;
+      case 6: return 0xFFFF00FF;
+      case 7: return 0xFFFFFFFF;
+      case 8: return 0xFF414141;
+      case 9: return 0xFF808080;
+      case 10: return 0xFFFF0000;
+      case 11: return 0xFFFFAAAA;
+      case 12: return 0xFFBD0000;
+      case 13: return 0xFFBD7E7E;
+      case 14: return 0xFF810000;
+      case 20: return 0xFFFF7F00;
+      case 30: return 0xFFFF7F7F;
+      case 40: return 0xFFFF3F3F;
+      case 50: return 0xFF7F3F00;
+      case 60: return 0xFFFF7F3F;
+      case 70: return 0xFFBD7E00;
+      case 80: return 0xFF7F7F00;
+      case 90: return 0xFFBDBD00;
+      case 91: return 0xFF7FFF7F;
+      case 92: return 0xFF00BD00;
+      case 93: return 0xFF007F00;
+      case 94: return 0xFF3FFF3F;
+      case 95: return 0xFF00FF7F;
+      case 100: return 0xFF00BDBD;
+      case 110: return 0xFF7FFFFF;
+      case 120: return 0xFF007FBD;
+      case 130: return 0xFF0000BD;
+      case 140: return 0xFF3F3FFF;
+      case 150: return 0xFF00007F;
+      case 160: return 0xFF7F7FFF;
+      case 170: return 0xFF3F00BD;
+      case 180: return 0xFF7F00FF;
+      case 190: return 0xFFBD007F;
+      case 200: return 0xFFFF00FF;
+      case 210: return 0xFFFF7FFF;
+      case 220: return 0xFFFF3FBD;
+      case 230: return 0xFFBDBDBD;
+      case 240: return 0xFF7F7F7F;
+      case 250: return 0xFF3F3F3F;
+      case 251: return 0xFFC0C0C0;
+      case 252: return 0xFF989898;
+      case 253: return 0xFF707070;
+      case 254: return 0xFF484848;
+      case 255: return 0xFF000000;
+      default: return 0xFFFFFFFF;
+    }
+  }
+
+  static int _layerNameToARGB(String layer) {
+    final u = layer.toUpperCase();
+    if (u.contains('측점') || u.contains('NO') || u.contains('STA')) return 0xFF00E5FF; // cyan
+    if (u.contains('계획') || u.contains('PLAN') || u.contains('DESIGN')) return 0xFFF44336; // red
+    if (u.contains('현황') || u.contains('EXIST')) return 0xFF4CAF50; // green
+    if (u.contains('제방') || u.contains('BANK') || u.contains('LEVEE')) return 0xFFFFEB3B; // yellow
+    if (u.contains('홍수위') || u.contains('FLOOD') || u.contains('WATER')) return 0xFF2196F3; // blue
+    if (u.contains('문자') || u.contains('TEXT') || u.contains('DIM')) return 0xB3FFFFFF; // white70
+    if (u.contains('포장') || u.contains('PAVEMENT') || u.contains('PAVE')) return 0xFFBDBDBD; // grey400
+    if (u.contains('중심') || u.contains('CENTER') || u.contains('CL')) return 0xFFFF9800; // orange
+    if (u.contains('경계') || u.contains('BOUNDARY') || u.contains('BORDER')) return 0xFF9C27B0; // purple
+    return 0xFFFFFFFF; // white
+  }
+
   /// DXF 엔티티 파싱 — raw 파서를 단일 소스로 사용
   static Map<String, dynamic> parseDxfEntities(String dxfContent) {
     final entities = <Map<String, dynamic>>[];
@@ -880,6 +960,7 @@ class DxfService {
       if (colorCode == null || colorCode == 0) {
         colorCode = layerColors[layer];
       }
+      final resolvedColor = _resolveColor(raw['color'] as int?, layer, layerColors);
 
       final isSpecialLayer = layer.contains('측점') ||
           layer.startsWith('#') ||
@@ -902,6 +983,7 @@ class DxfService {
           'type': 'LINE',
           'layer': layer,
           'color': colorCode,
+          'resolvedColor': resolvedColor,
           'x1': x1, 'y1': y1,
           'x2': x2, 'y2': y2,
           'aabb': [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)],
@@ -959,6 +1041,7 @@ class DxfService {
           'type': 'LWPOLYLINE',
           'layer': layer,
           'color': colorCode,
+          'resolvedColor': resolvedColor,
           'points': points,
           'closed': raw['closed'] ?? false,
           'aabb': [pMinX, pMinY, pMaxX, pMaxY],
@@ -982,6 +1065,7 @@ class DxfService {
           'type': 'CIRCLE',
           'layer': layer,
           'color': colorCode,
+          'resolvedColor': resolvedColor,
           'cx': cx, 'cy': cy, 'radius': radius,
           'aabb': [cx - radius, cy - radius, cx + radius, cy + radius],
         });
@@ -1004,6 +1088,7 @@ class DxfService {
           'type': 'ARC',
           'layer': layer,
           'color': colorCode,
+          'resolvedColor': resolvedColor,
           'cx': cx, 'cy': cy, 'radius': radius,
           'startAngle': startAngle, 'endAngle': endAngle,
           'aabb': [cx - radius, cy - radius, cx + radius, cy + radius],
@@ -1028,6 +1113,7 @@ class DxfService {
           'type': 'TEXT',
           'layer': layer,
           'color': colorCode,
+          'resolvedColor': resolvedColor,
           'x': x, 'y': y,
           'text': text, 'height': height,
           'aabb': [x, y, x + textWidth, y + height],
@@ -1046,6 +1132,7 @@ class DxfService {
           'type': 'POINT',
           'layer': layer,
           'color': colorCode,
+          'resolvedColor': resolvedColor,
           'x': x, 'y': y,
           'aabb': [x, y, x, y],
         });
@@ -1062,6 +1149,7 @@ class DxfService {
           'type': 'HATCH',
           'layer': layer,
           'color': colorCode,
+          'resolvedColor': resolvedColor,
           'solid': raw['solid'] ?? false,
           'patternName': raw['patternName'] ?? '',
           'boundaries': boundaries,

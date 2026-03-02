@@ -1,9 +1,7 @@
 import 'dart:math';
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
-/// DXF 도면을 렌더링하는 CustomPainter
-/// Picture 캐싱: 줌/레이어 변경 시 ui.Picture로 녹화, 패닝 시 translate+drawPicture로 재생
+/// DXF 도면을 렌더링하는 CustomPainter (순수 벡터 렌더링)
 class DxfPainter extends CustomPainter {
   final List<dynamic> entities;
   final Map<String, dynamic> bounds;
@@ -11,10 +9,9 @@ class DxfPainter extends CustomPainter {
   final Offset offset;
   final Set<String> hiddenLayers;
 
-  /// 캐시된 Picture (offset=0으로 녹화됨, 패닝/줌 시 transform+drawPicture로 재생)
-  final ui.Picture? cachedPicture;
-  /// 캐시 녹화 시의 줌 레벨 (줌 변경 시 스케일 보정용)
-  final double cacheZoom;
+  /// TextPainter 캐시: 키 = "text|fontSize" → TextPainter (layout 완료 상태)
+  static final Map<String, TextPainter> _textCache = {};
+  static const int _textCacheMaxSize = 500;
 
   DxfPainter({
     required this.entities,
@@ -22,8 +19,6 @@ class DxfPainter extends CustomPainter {
     this.zoom = 1.0,
     this.offset = Offset.zero,
     this.hiddenLayers = const {},
-    this.cachedPicture,
-    this.cacheZoom = 1.0,
   });
 
   @override
@@ -36,28 +31,10 @@ class DxfPainter extends CustomPainter {
       Paint()..color = Colors.grey[900]!,
     );
 
-    if (cachedPicture != null) {
-      // 고속 경로: 캐시된 Picture를 transform하여 재생
-      // Picture는 offset=0, zoom=cacheZoom으로 녹화됨
-      canvas.save();
-      final r = zoom / cacheZoom; // 스케일 비율
-      // 캔버스 중앙 기준 스케일 + 오프셋 적용
-      // 수학: desired(x) = r*(cached(x) - W/2) + W/2 + offset.dx
-      //       desired(y) = r*(cached(y) - H/2) + H/2 - offset.dy
-      canvas.translate(size.width / 2 + offset.dx, size.height / 2 - offset.dy);
-      canvas.scale(r, r);
-      canvas.translate(-size.width / 2, -size.height / 2);
-      canvas.drawPicture(cachedPicture!);
-      canvas.restore();
-    } else {
-      // 폴백: 직접 렌더링 (캐시 없을 때)
-      paintEntities(canvas, size);
-    }
+    _paintEntities(canvas, size);
   }
 
-  /// 엔티티 배치 렌더링 (뷰포트 컬링 + 색상별 Path 배치)
-  /// [enableCulling]: false면 뷰포트 컬링 스킵 (Picture 캐시 빌드 시)
-  void paintEntities(Canvas canvas, Size size, {bool enableCulling = true}) {
+  void _paintEntities(Canvas canvas, Size size) {
     final minX = bounds['minX'] as double;
     final minY = bounds['minY'] as double;
     final maxX = bounds['maxX'] as double;
@@ -76,18 +53,15 @@ class DxfPainter extends CustomPainter {
     final centerOffsetY = (size.height - dxfHeight * scale) / 2;
 
     // 뷰포트 컬링 범위
-    double cullMinX = -1e18, cullMaxX = 1e18, cullMinY = -1e18, cullMaxY = 1e18;
-    if (enableCulling) {
-      final viewMinX = (-centerOffsetX - offset.dx) / scale + minX;
-      final viewMaxX = (size.width - centerOffsetX - offset.dx) / scale + minX;
-      final viewMaxY = (size.height - centerOffsetY - offset.dy) / scale + minY;
-      final viewMinY = (-centerOffsetY - offset.dy) / scale + minY;
-      final margin = (viewMaxX - viewMinX) * 0.05;
-      cullMinX = viewMinX - margin;
-      cullMaxX = viewMaxX + margin;
-      cullMinY = viewMinY - margin;
-      cullMaxY = viewMaxY + margin;
-    }
+    final viewMinX = (-centerOffsetX - offset.dx) / scale + minX;
+    final viewMaxX = (size.width - centerOffsetX - offset.dx) / scale + minX;
+    final viewMaxY = (size.height - centerOffsetY - offset.dy) / scale + minY;
+    final viewMinY = (-centerOffsetY - offset.dy) / scale + minY;
+    final margin = (viewMaxX - viewMinX) * 0.05;
+    final cullMinX = viewMinX - margin;
+    final cullMaxX = viewMaxX + margin;
+    final cullMinY = viewMinY - margin;
+    final cullMaxY = viewMaxY + margin;
 
     // 좌표 변환 함수
     Offset tx(double x, double y) {
@@ -97,17 +71,14 @@ class DxfPainter extends CustomPainter {
       );
     }
 
-    // sqrt(zoom) 비례 선 두께: 캐시 스케일링↔재빌드 간 팝 최소화 + 고줌에서 과도한 굵기 방지
-    // 팝 비율 = sqrt(줌변화비), 예) 2배 줌 시 1.41배 차이 (거의 안 보임)
-    final baseStroke = baseScale < 0.01 ? 1.2 : (baseScale < 0.1 ? 0.9 : 0.6);
-    final strokeWidth = baseStroke * sqrt(zoom);
+    // 고정 선 두께
+    const double strokeWidth = 0.5;
 
     // === 색상별 배치 수집 ===
     final Map<int, Path> strokePaths = {};
     final Map<int, Path> fillPaths = {};
-    final Map<int, Color> colorLookup = {};
-    final List<(Map<String, dynamic>, Color)> textEntities = [];
-    final List<(Map<String, dynamic>, Color)> hatchEntities = [];
+    final List<(Map<String, dynamic>, int)> textEntities = [];
+    final List<(Map<String, dynamic>, int)> hatchEntities = [];
 
     for (final entity in entities) {
       final type = entity['type'] as String;
@@ -115,21 +86,17 @@ class DxfPainter extends CustomPainter {
       if (layer != null && hiddenLayers.contains(layer)) continue;
 
       // 뷰포트 컬링
-      if (enableCulling) {
-        final aabb = entity['aabb'] as List?;
-        if (aabb != null) {
-          if (aabb[2] < cullMinX || aabb[0] > cullMaxX ||
-              aabb[3] < cullMinY || aabb[1] > cullMaxY) continue;
-        }
+      final aabb = entity['aabb'] as List?;
+      if (aabb != null) {
+        if (aabb[2] < cullMinX || aabb[0] > cullMaxX ||
+            aabb[3] < cullMinY || aabb[1] > cullMaxY) continue;
       }
 
-      final colorCode = entity['color'] as int?;
-      final color = _getEntityColor(colorCode, layer);
-      final ck = color.toARGB32();
+      // 사전 resolve된 색상 사용 (ARGB int)
+      final ck = (entity['resolvedColor'] as int?) ?? 0xFFFFFFFF;
 
       switch (type) {
         case 'LINE':
-          colorLookup.putIfAbsent(ck, () => color);
           final path = strokePaths.putIfAbsent(ck, () => Path());
           final p1 = tx(entity['x1'] as double, entity['y1'] as double);
           final p2 = tx(entity['x2'] as double, entity['y2'] as double);
@@ -138,13 +105,11 @@ class DxfPainter extends CustomPainter {
           break;
 
         case 'LWPOLYLINE':
-          colorLookup.putIfAbsent(ck, () => color);
           final path = strokePaths.putIfAbsent(ck, () => Path());
           _addPolylineToPath(path, entity, tx);
           break;
 
         case 'CIRCLE':
-          colorLookup.putIfAbsent(ck, () => color);
           final path = strokePaths.putIfAbsent(ck, () => Path());
           final center = tx(entity['cx'] as double, entity['cy'] as double);
           path.addOval(Rect.fromCircle(
@@ -154,52 +119,89 @@ class DxfPainter extends CustomPainter {
           break;
 
         case 'ARC':
-          colorLookup.putIfAbsent(ck, () => color);
           final path = strokePaths.putIfAbsent(ck, () => Path());
           _addArcToPath(path, entity, tx, scale);
           break;
 
         case 'POINT':
-          colorLookup.putIfAbsent(ck, () => color);
           final path = fillPaths.putIfAbsent(ck, () => Path());
           final pos = tx(entity['x'] as double, entity['y'] as double);
           path.addOval(Rect.fromCircle(center: pos, radius: 2.0));
           break;
 
         case 'TEXT':
-          textEntities.add((entity, color));
+          textEntities.add((entity, ck));
           break;
 
         case 'HATCH':
-          hatchEntities.add((entity, color));
+          hatchEntities.add((entity, ck));
           break;
       }
     }
 
     // === 렌더링: HATCH(배경) → 배치 지오메트리 → TEXT(전경) ===
 
-    final hatchPaint = Paint()..strokeWidth = strokeWidth..style = PaintingStyle.stroke;
-    for (final (entity, color) in hatchEntities) {
-      hatchPaint.color = color;
-      _drawHatch(canvas, entity, tx, hatchPaint, scale);
+    // HATCH: 색상별 배치로 경계 Path 합쳐서 한번에 그리기
+    if (hatchEntities.isNotEmpty) {
+      final Map<int, Path> hatchFillPaths = {};
+      final Map<int, Path> hatchStrokePaths = {};
+
+      for (final (entity, ck) in hatchEntities) {
+        final boundaries = entity['boundaries'] as List?;
+        if (boundaries == null || boundaries.isEmpty) continue;
+
+        for (final boundary in boundaries) {
+          final segs = boundary as List;
+          if (segs.isEmpty) continue;
+
+          final path = _buildHatchPath(segs, tx, scale);
+          if (path == null) continue;
+
+          final pathBounds = path.getBounds();
+          if (pathBounds.width > 10000 || pathBounds.height > 10000) continue;
+
+          final fp = hatchFillPaths.putIfAbsent(ck, () => Path());
+          fp.addPath(path, Offset.zero);
+          final sp = hatchStrokePaths.putIfAbsent(ck, () => Path());
+          sp.addPath(path, Offset.zero);
+        }
+      }
+
+      // fill
+      final hfPaint = Paint()..style = PaintingStyle.fill;
+      for (final entry in hatchFillPaths.entries) {
+        hfPaint.color = Color(entry.key).withValues(alpha: 0.25);
+        canvas.drawPath(entry.value, hfPaint);
+      }
+      // stroke
+      final hsPaint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.5;
+      for (final entry in hatchStrokePaths.entries) {
+        hsPaint.color = Color(entry.key).withValues(alpha: 0.5);
+        canvas.drawPath(entry.value, hsPaint);
+      }
     }
 
+    // 배치 stroke
     final batchPaint = Paint()
       ..strokeWidth = strokeWidth
       ..style = PaintingStyle.stroke;
     for (final entry in strokePaths.entries) {
-      batchPaint.color = colorLookup[entry.key]!;
+      batchPaint.color = Color(entry.key);
       canvas.drawPath(entry.value, batchPaint);
     }
 
+    // 배치 fill
     final fillPaint = Paint()..style = PaintingStyle.fill;
     for (final entry in fillPaths.entries) {
-      fillPaint.color = colorLookup[entry.key]!;
+      fillPaint.color = Color(entry.key);
       canvas.drawPath(entry.value, fillPaint);
     }
 
-    for (final (entity, color) in textEntities) {
-      _drawText(canvas, entity, tx, color, scale);
+    // TEXT
+    for (final (entity, ck) in textEntities) {
+      _drawText(canvas, entity, tx, Color(ck), scale);
     }
   }
 
@@ -306,93 +308,6 @@ class DxfPainter extends CustomPainter {
     );
   }
 
-  // ===== 색상 매핑 =====
-
-  Color _getEntityColor(int? colorCode, String? layer) {
-    if (colorCode == null || colorCode == 0) {
-      return _getLayerColor(layer ?? '0');
-    }
-
-    final absColorCode = colorCode.abs();
-
-    switch (absColorCode) {
-      case 1: return const Color(0xFFFF0000);
-      case 2: return const Color(0xFFFFFF00);
-      case 3: return const Color(0xFF00FF00);
-      case 4: return const Color(0xFF00FFFF);
-      case 5: return const Color(0xFF0000FF);
-      case 6: return const Color(0xFFFF00FF);
-      case 7: return const Color(0xFFFFFFFF);
-      case 8: return const Color(0xFF414141);
-      case 9: return const Color(0xFF808080);
-      case 10: return const Color(0xFFFF0000);
-      case 11: return const Color(0xFFFFAAAA);
-      case 12: return const Color(0xFFBD0000);
-      case 13: return const Color(0xFFBD7E7E);
-      case 14: return const Color(0xFF810000);
-      case 20: return const Color(0xFFFF7F00);
-      case 30: return const Color(0xFFFF7F7F);
-      case 40: return const Color(0xFFFF3F3F);
-      case 50: return const Color(0xFF7F3F00);
-      case 60: return const Color(0xFFFF7F3F);
-      case 70: return const Color(0xFFBD7E00);
-      case 80: return const Color(0xFF7F7F00);
-      case 90: return const Color(0xFFBDBD00);
-      case 91: return const Color(0xFF7FFF7F);
-      case 92: return const Color(0xFF00BD00);
-      case 93: return const Color(0xFF007F00);
-      case 94: return const Color(0xFF3FFF3F);
-      case 95: return const Color(0xFF00FF7F);
-      case 100: return const Color(0xFF00BDBD);
-      case 110: return const Color(0xFF7FFFFF);
-      case 120: return const Color(0xFF007FBD);
-      case 130: return const Color(0xFF0000BD);
-      case 140: return const Color(0xFF3F3FFF);
-      case 150: return const Color(0xFF00007F);
-      case 160: return const Color(0xFF7F7FFF);
-      case 170: return const Color(0xFF3F00BD);
-      case 180: return const Color(0xFF7F00FF);
-      case 190: return const Color(0xFFBD007F);
-      case 200: return const Color(0xFFFF00FF);
-      case 210: return const Color(0xFFFF7FFF);
-      case 220: return const Color(0xFFFF3FBD);
-      case 230: return const Color(0xFFBDBDBD);
-      case 240: return const Color(0xFF7F7F7F);
-      case 250: return const Color(0xFF3F3F3F);
-      case 251: return const Color(0xFFC0C0C0);
-      case 252: return const Color(0xFF989898);
-      case 253: return const Color(0xFF707070);
-      case 254: return const Color(0xFF484848);
-      case 255: return const Color(0xFF000000);
-      default: return const Color(0xFFFFFFFF);
-    }
-  }
-
-  Color _getLayerColor(String layer) {
-    final layerUpper = layer.toUpperCase();
-    if (layerUpper.contains('측점') || layerUpper.contains('NO') || layerUpper.contains('STA')) {
-      return Colors.cyan;
-    } else if (layerUpper.contains('계획') || layerUpper.contains('PLAN') || layerUpper.contains('DESIGN')) {
-      return Colors.red;
-    } else if (layerUpper.contains('현황') || layerUpper.contains('EXIST')) {
-      return Colors.green;
-    } else if (layerUpper.contains('제방') || layerUpper.contains('BANK') || layerUpper.contains('LEVEE')) {
-      return Colors.yellow;
-    } else if (layerUpper.contains('홍수위') || layerUpper.contains('FLOOD') || layerUpper.contains('WATER')) {
-      return Colors.blue;
-    } else if (layerUpper.contains('문자') || layerUpper.contains('TEXT') || layerUpper.contains('DIM')) {
-      return Colors.white70;
-    } else if (layerUpper.contains('포장') || layerUpper.contains('PAVEMENT') || layerUpper.contains('PAVE')) {
-      return Colors.grey[400]!;
-    } else if (layerUpper.contains('중심') || layerUpper.contains('CENTER') || layerUpper.contains('CL')) {
-      return Colors.orange;
-    } else if (layerUpper.contains('경계') || layerUpper.contains('BOUNDARY') || layerUpper.contains('BORDER')) {
-      return Colors.purple;
-    } else {
-      return Colors.white;
-    }
-  }
-
   // ===== 개별 렌더링 (TEXT, HATCH) =====
 
   void _drawText(
@@ -409,199 +324,34 @@ class DxfPainter extends CustomPainter {
 
     final position = transform(x, y);
     final scaledHeight = height * scale;
-    if (scaledHeight < 3.0) return;
+    if (scaledHeight < 4.0) return; // 4px 미만은 스킵 (기존 3.0 → 강화)
 
-    final textSpan = TextSpan(
-      text: text,
-      style: TextStyle(
-        color: color,
-        fontSize: scaledHeight.clamp(8.0, 100.0),
-        fontFamily: 'monospace',
-      ),
-    );
+    final fontSize = scaledHeight.clamp(8.0, 100.0);
+    final cacheKey = '$text|${fontSize.toStringAsFixed(1)}|${color.toARGB32()}';
 
-    final textPainter = TextPainter(
-      text: textSpan,
-      textDirection: TextDirection.ltr,
-    );
+    var tp = _textCache[cacheKey];
+    if (tp == null) {
+      tp = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: TextStyle(
+            color: color,
+            fontSize: fontSize,
+            fontFamily: 'monospace',
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      );
+      tp.layout();
 
-    textPainter.layout();
-    textPainter.paint(canvas, position);
-  }
-
-  void _drawHatch(
-    Canvas canvas,
-    Map<String, dynamic> entity,
-    Offset Function(double, double) transform,
-    Paint paint,
-    double scale,
-  ) {
-    final boundaries = entity['boundaries'] as List?;
-    if (boundaries == null || boundaries.isEmpty) return;
-
-    final isSolid = entity['solid'] as bool? ?? false;
-    final patternLines = entity['patternLines'] as List? ?? [];
-    final patternScale = (entity['patternScale'] as double?) ?? 1.0;
-
-    final hatchStroke = 0.3 * sqrt(zoom);
-    final strokePaint = Paint()
-      ..color = paint.color.withValues(alpha: 0.5)
-      ..strokeWidth = hatchStroke
-      ..style = PaintingStyle.stroke;
-
-    Path? combinedPath;
-    for (final boundary in boundaries) {
-      final segs = boundary as List;
-      if (segs.isEmpty) continue;
-
-      final path = _buildHatchPath(segs, transform, scale);
-      if (path == null) continue;
-
-      final pathBounds = path.getBounds();
-      if (pathBounds.width > 10000 || pathBounds.height > 10000) continue;
-
-      if (combinedPath == null) {
-        combinedPath = path;
-      } else {
-        combinedPath.addPath(path, Offset.zero);
+      // 캐시 크기 제한
+      if (_textCache.length >= _textCacheMaxSize) {
+        _textCache.clear();
       }
+      _textCache[cacheKey] = tp;
     }
 
-    if (combinedPath == null) return;
-
-    if (isSolid || patternLines.isEmpty) {
-      final fillPaint = Paint()
-        ..color = paint.color.withValues(alpha: 0.3)
-        ..style = PaintingStyle.fill;
-      canvas.drawPath(combinedPath, fillPaint);
-      canvas.drawPath(combinedPath, strokePaint);
-    } else {
-      final bgPaint = Paint()
-        ..color = paint.color.withValues(alpha: 0.1)
-        ..style = PaintingStyle.fill;
-      canvas.drawPath(combinedPath, bgPaint);
-
-      canvas.save();
-      canvas.clipPath(combinedPath);
-
-      final patternPaint = Paint()
-        ..color = paint.color.withValues(alpha: 0.7)
-        ..strokeWidth = hatchStroke
-        ..style = PaintingStyle.stroke;
-
-      final clipBounds = combinedPath.getBounds();
-
-      for (final pl in patternLines) {
-        final angle = (pl['angle'] as double?) ?? 0;
-        final ox = (pl['ox'] as double?) ?? 0;
-        final oy = (pl['oy'] as double?) ?? 0;
-        final dx = (pl['dx'] as double?) ?? 0;
-        final dy = (pl['dy'] as double?) ?? 0;
-        final dashes = (pl['dashes'] as List?)?.cast<double>() ?? [];
-
-        _drawHatchPatternLine(
-          canvas, transform, scale, patternPaint,
-          clipBounds, angle, ox, oy, dx, dy, dashes, patternScale,
-        );
-      }
-
-      canvas.restore();
-      canvas.drawPath(combinedPath, strokePaint);
-    }
-  }
-
-  void _drawHatchPatternLine(
-    Canvas canvas,
-    Offset Function(double, double) transform,
-    double scale,
-    Paint paint,
-    Rect clipBounds,
-    double angle,
-    double ox, double oy,
-    double dx, double dy,
-    List<double> dashes,
-    double patternScale,
-  ) {
-    final spacing = dy.abs() * patternScale;
-    if (spacing < 1e-6) return;
-
-    final screenSpacing = spacing * scale;
-    if (screenSpacing < 2.0) return;
-
-    final clipW = clipBounds.width;
-    final clipH = clipBounds.height;
-    final diagScreen = sqrt(clipW * clipW + clipH * clipH);
-
-    var actualSpacing = screenSpacing;
-    var lineCount = (diagScreen / actualSpacing).ceil() + 2;
-    if (lineCount > 150) {
-      actualSpacing = diagScreen / 150.0;
-      lineCount = 150;
-    }
-
-    final angleRad = angle * pi / 180.0;
-    final screenAngleRad = -angleRad;
-    final sDirX = cos(screenAngleRad);
-    final sDirY = sin(screenAngleRad);
-    final sPerpX = -sDirY;
-    final sPerpY = sDirX;
-
-    final centerX = clipBounds.center.dx;
-    final centerY = clipBounds.center.dy;
-    final halfLineLen = diagScreen;
-
-    final screenDashes = dashes.map((d) => d * patternScale * scale).toList();
-    final hasDash = screenDashes.isNotEmpty
-        && screenDashes.any((d) => d.abs() > 0.5)
-        && lineCount <= 100;
-
-    for (int n = -lineCount; n <= lineCount; n++) {
-      final cx = centerX + sPerpX * actualSpacing * n;
-      final cy = centerY + sPerpY * actualSpacing * n;
-
-      final p1 = Offset(cx - sDirX * halfLineLen, cy - sDirY * halfLineLen);
-      final p2 = Offset(cx + sDirX * halfLineLen, cy + sDirY * halfLineLen);
-
-      if (hasDash) {
-        _drawDashedLine(canvas, p1, p2, screenDashes, paint);
-      } else {
-        canvas.drawLine(p1, p2, paint);
-      }
-    }
-  }
-
-  void _drawDashedLine(Canvas canvas, Offset p1, Offset p2, List<double> dashes, Paint paint) {
-    final dx = p2.dx - p1.dx;
-    final dy = p2.dy - p1.dy;
-    final totalLen = sqrt(dx * dx + dy * dy);
-    if (totalLen < 1.0) return;
-
-    final ux = dx / totalLen;
-    final uy = dy / totalLen;
-
-    double t = 0;
-    int dashIdx = 0;
-    while (t < totalLen) {
-      final dashLen = dashes[dashIdx % dashes.length].abs();
-      final isDraw = dashes[dashIdx % dashes.length] >= 0;
-      final segEnd = (t + dashLen).clamp(0.0, totalLen);
-
-      if (dashLen < 0.01) {
-        final px = p1.dx + ux * t;
-        final py = p1.dy + uy * t;
-        canvas.drawCircle(Offset(px, py), 0.5, paint..style = PaintingStyle.fill);
-        paint.style = PaintingStyle.stroke;
-      } else if (isDraw) {
-        final sx = p1.dx + ux * t;
-        final sy = p1.dy + uy * t;
-        final ex = p1.dx + ux * segEnd;
-        final ey = p1.dy + uy * segEnd;
-        canvas.drawLine(Offset(sx, sy), Offset(ex, ey), paint);
-      }
-
-      t = segEnd;
-      dashIdx++;
-    }
+    tp.paint(canvas, position);
   }
 
   Path? _buildHatchPath(
@@ -669,8 +419,6 @@ class DxfPainter extends CustomPainter {
         oldDelegate.bounds != bounds ||
         oldDelegate.zoom != zoom ||
         oldDelegate.offset != offset ||
-        oldDelegate.hiddenLayers != hiddenLayers ||
-        oldDelegate.cachedPicture != cachedPicture ||
-        oldDelegate.cacheZoom != cacheZoom;
+        oldDelegate.hiddenLayers != hiddenLayers;
   }
 }

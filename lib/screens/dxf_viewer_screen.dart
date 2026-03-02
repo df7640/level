@@ -1,5 +1,4 @@
 import 'dart:math';
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -78,10 +77,6 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
   bool _edgePanDone = false; // 가장자리 자동패닝 1회 제한
 
-  // Picture 캐시 (패닝 고속화: offset=0으로 녹화, 패닝 시 translate+drawPicture)
-  ui.Picture? _cachedPicture;
-  double _pictureZoom = -1;
-
   // GPS
   final BluetoothGnssService _gnssService = BluetoothGnssService();
   bool _showGpsOverlay = false; // GPS 상태 오버레이
@@ -108,46 +103,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
   @override
   void dispose() {
-    _cachedPicture?.dispose();
     _gnssService.removeListener(_onGnssUpdate);
     _gnssService.dispose();
     super.dispose();
-  }
-
-  /// Picture 캐시 빌드 (offset=0으로 전체 엔티티 녹화, 컬링 없음)
-  void _rebuildPictureCache(Size canvasSize) {
-    if (_dxfData == null) return;
-    final recorder = ui.PictureRecorder();
-    final cacheCanvas = Canvas(recorder);
-
-    final painter = DxfPainter(
-      entities: _dxfData!['entities'],
-      bounds: _dxfData!['bounds'],
-      zoom: _zoom,
-      offset: Offset.zero,
-      hiddenLayers: _hiddenLayers,
-    );
-    painter.paintEntities(cacheCanvas, canvasSize, enableCulling: false);
-
-    _cachedPicture?.dispose();
-    _cachedPicture = recorder.endRecording();
-    _pictureZoom = _zoom;
-  }
-
-  /// Picture 캐시 무효화 (줌 변경 중 등)
-  void _invalidatePictureCache() {
-    _cachedPicture?.dispose();
-    _cachedPicture = null;
-    _pictureZoom = -1;
-  }
-
-  /// 다음 프레임 이후 Picture 캐시 재빌드 스케줄 (UI 블로킹 방지)
-  void _schedulePictureCacheRebuild() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _dxfData == null || _lastCanvasSize == null) return;
-      _rebuildPictureCache(_lastCanvasSize!);
-      setState(() {});
-    });
   }
 
   void _onGnssUpdate() {
@@ -326,7 +284,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         -(screenY - canvasSize.height / 2),
       );
     });
-    _schedulePictureCacheRebuild();
+
   }
 
   /// 영역 확대 적용
@@ -463,7 +421,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       _zoom = newZoom;
       _offset = Offset(newOffsetDx, newOffsetDy);
     });
-    _schedulePictureCacheRebuild();
+
 
     _syncNearestStation(canvasSize);
   }
@@ -506,7 +464,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       _zoom = newZoom;
       _offset = Offset(newOffsetDx, newOffsetDy);
     });
-    _schedulePictureCacheRebuild();
+
 
     _syncNearestStation(canvasSize);
   }
@@ -701,7 +659,6 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       final data = await DxfService.loadDxfFromAssets('assets/sample_data/test.dxf');
 
       if (data != null) {
-        _invalidatePictureCache();
         setState(() {
           _dxfData = data;
           _isLoading = false;
@@ -717,12 +674,6 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
           _showDimStylePanel = false;
           _confirmedPoints.clear();
           _isPointMode = false;
-        });
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_lastCanvasSize != null) {
-            _rebuildPictureCache(_lastCanvasSize!);
-            if (mounted) setState(() {});
-          }
         });
       } else {
         setState(() => _isLoading = false);
@@ -744,7 +695,6 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         final data = await DxfService.loadDxfFile(filePath);
 
         if (data != null) {
-          _invalidatePictureCache();
           setState(() {
             _dxfData = data;
             _isLoading = false;
@@ -764,12 +714,6 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
             _showDimStylePanel = false;
             _confirmedPoints.clear();
             _isPointMode = false;
-          });
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (_lastCanvasSize != null) {
-              _rebuildPictureCache(_lastCanvasSize!);
-              if (mounted) setState(() {});
-            }
           });
         } else {
           setState(() => _isLoading = false);
@@ -879,7 +823,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         _zoom = newZoom;
         _offset = Offset(newOffsetDx, newOffsetDy);
       });
-      _schedulePictureCacheRebuild();
+  
     });
   }
 
@@ -1049,7 +993,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                 _offset = Offset.zero;
                 _selectedStation = null;
               });
-              _schedulePictureCacheRebuild();
+          
             },
           ),
         ],
@@ -1390,15 +1334,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
           _isZoomWindowMode = false;
           _zoomWindowStart = null;
           _zoomWindowEnd = null;
-          // 화면 크기 변경 → Picture 캐시 무효화 후 재빌드
-          _invalidatePictureCache();
         }
 
         _lastCanvasSize = canvasSize;
-        // 캐시 없으면 빌드 (화면 크기 변경 또는 초기 로드 시)
-        if (_cachedPicture == null && _dxfData != null) {
-          _schedulePictureCacheRebuild();
-        }
 
         return Stack(
           children: [
@@ -1537,11 +1475,11 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   });
                 } else if (_isZoomWindowMode && _zoomWindowStart != null && _zoomWindowEnd != null) {
                   _applyZoomWindow();
-                  _schedulePictureCacheRebuild();
+              
                 } else {
                   // 팬/줌 끝 → 가장 가까운 측점 싱크 + Picture 캐시 빌드
                   _syncNearestStation(canvasSize);
-                  _schedulePictureCacheRebuild();
+              
                 }
               },
               child: Stack(
@@ -1554,8 +1492,6 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                       zoom: _zoom,
                       offset: _offset,
                       hiddenLayers: _hiddenLayers,
-                      cachedPicture: _cachedPicture,
-                      cacheZoom: _pictureZoom,
                     ),
                   ),
                   // 영역 확대 사각형
@@ -1827,9 +1763,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                     onPressed: _hiddenLayers.isEmpty
                         ? null
                         : () {
-                            _invalidatePictureCache();
+
                             setState(() => _hiddenLayers.clear());
-                            _schedulePictureCacheRebuild();
+                        
                           },
                     style: TextButton.styleFrom(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -1844,9 +1780,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                     onPressed: _hiddenLayers.length == layers.length
                         ? null
                         : () {
-                            _invalidatePictureCache();
+
                             setState(() => _hiddenLayers.addAll(layers));
-                            _schedulePictureCacheRebuild();
+                        
                           },
                     style: TextButton.styleFrom(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -1885,7 +1821,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
                         return InkWell(
                           onTap: () {
-                            _invalidatePictureCache();
+
                             setState(() {
                               if (isVisible) {
                                 _hiddenLayers.add(layer);
@@ -1893,7 +1829,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                                 _hiddenLayers.remove(layer);
                               }
                             });
-                            _schedulePictureCacheRebuild();
+                        
                           },
                           child: Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
