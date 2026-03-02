@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../models/dimension_data.dart';
 import '../models/station_data.dart';
 import '../services/bluetooth_gnss_service.dart';
@@ -129,13 +130,38 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     }
   }
 
+  /// GPS Fix 상태 텍스트
+  String _getFixStatusText() {
+    final fix = _gnssService.position?.fixQuality ?? 0;
+    switch (fix) {
+      case 4: return 'RTK 고정';
+      case 5: return '보정신호 수신중...';
+      case 2: return 'DGPS';
+      case 1: return '단독측위';
+      default: return '위성 탐색중...';
+    }
+  }
+
   /// GPS 토글 (연결/해제)
-  void _toggleGps() {
+  void _toggleGps() async {
     if (_gnssService.connectionState == GnssConnectionState.connected ||
         _gnssService.connectionState == GnssConnectionState.connecting) {
       _gnssService.disconnect();
     } else {
-      _showBluetoothDeviceDialog();
+      // Android 12+ 블루투스 런타임 권한 요청
+      final btConnect = await Permission.bluetoothConnect.request();
+      final btScan = await Permission.bluetoothScan.request();
+      final location = await Permission.locationWhenInUse.request();
+
+      if (btConnect.isGranted && btScan.isGranted && location.isGranted) {
+        _showBluetoothDeviceDialog();
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('블루투스 및 위치 권한이 필요합니다. 설정에서 허용해주세요.')),
+          );
+        }
+      }
     }
   }
 
@@ -203,7 +229,29 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   /// GPS 현재 위치로 이동 (롱프레스)
   void _goToGpsPosition() {
     final pos = _gnssService.position;
-    if (pos == null || _dxfData == null || _lastCanvasSize == null) return;
+    if (pos == null || _dxfData == null || _lastCanvasSize == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('GPS 위치 없음: pos=${pos != null}, dxf=${_dxfData != null}, canvas=${_lastCanvasSize != null}')),
+        );
+      }
+      return;
+    }
+
+    // 디버그: GPS TM 좌표와 도면 범위 비교
+    final debugBounds = _dxfData!['bounds'] as Map<String, dynamic>;
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'GPS TM: (${pos.tmX.toStringAsFixed(1)}, ${pos.tmY.toStringAsFixed(1)})\n'
+            'DXF: X(${(debugBounds["minX"] as double).toStringAsFixed(1)}~${(debugBounds["maxX"] as double).toStringAsFixed(1)}) '
+            'Y(${(debugBounds["minY"] as double).toStringAsFixed(1)}~${(debugBounds["maxY"] as double).toStringAsFixed(1)})',
+          ),
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    }
 
     final canvasSize = _lastCanvasSize!;
     final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
@@ -1512,6 +1560,61 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                 ],
               ),
             ),
+            // GPS 연결 상태 오버레이
+            if (_gnssService.connectionState != GnssConnectionState.disconnected)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.75),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.circle, size: 10, color: _getGpsIconColor()),
+                          const SizedBox(width: 6),
+                          Text(
+                            _gnssService.connectionState == GnssConnectionState.connecting
+                                ? '연결 중...'
+                                : _gnssService.connectionState == GnssConnectionState.error
+                                    ? '연결 오류'
+                                    : '${_getFixStatusText()}  위성 ${_gnssService.position?.satellites ?? 0}',
+                            style: TextStyle(
+                              color: _getGpsIconColor(),
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (_gnssService.position != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          'TM  ${_gnssService.position!.tmX.toStringAsFixed(3)},  ${_gnssService.position!.tmY.toStringAsFixed(3)}',
+                          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'WGS  ${_gnssService.position!.latitude.toStringAsFixed(7)},  ${_gnssService.position!.longitude.toStringAsFixed(7)}',
+                          style: const TextStyle(color: Colors.white70, fontSize: 12),
+                        ),
+                        if (_gnssService.position!.altitude != null)
+                          Text(
+                            'H  ${_gnssService.position!.altitude!.toStringAsFixed(2)} m',
+                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                          ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
             // 포인트/치수 모드 안내 표시
             if (_isPointMode || _isDimensionMode)
               Positioned(
