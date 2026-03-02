@@ -904,6 +904,7 @@ class DxfService {
           'color': colorCode,
           'x1': x1, 'y1': y1,
           'x2': x2, 'y2': y2,
+          'aabb': [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)],
         });
         layers.add(layer);
         if (!isSpecialLayer) {
@@ -922,12 +923,45 @@ class DxfService {
         if (!allValid) continue;
 
         // points를 그대로 사용 — bulge 정보가 이미 포함
+        // AABB 계산 (벌지 호는 반경 추정으로 마진 포함)
+        double pMinX = double.infinity, pMinY = double.infinity;
+        double pMaxX = double.negativeInfinity, pMaxY = double.negativeInfinity;
+        for (final p in points) {
+          final px = (p['x'] as double?) ?? 0;
+          final py = (p['y'] as double?) ?? 0;
+          if (px < pMinX) pMinX = px;
+          if (py < pMinY) pMinY = py;
+          if (px > pMaxX) pMaxX = px;
+          if (py > pMaxY) pMaxY = py;
+        }
+        // 벌지가 있으면 호의 돌출분 마진 추가
+        for (int pi = 0; pi < points.length; pi++) {
+          final bulge = ((points[pi]['bulge'] as double?) ?? 0).abs();
+          if (bulge > 1e-10) {
+            final p1x = (points[pi]['x'] as double?) ?? 0;
+            final p1y = (points[pi]['y'] as double?) ?? 0;
+            final p2 = points[(pi + 1) % points.length];
+            final p2x = (p2['x'] as double?) ?? 0;
+            final p2y = (p2['y'] as double?) ?? 0;
+            final dx = p2x - p1x;
+            final dy = p2y - p1y;
+            final chord = sqrt(dx * dx + dy * dy);
+            final sagitta = chord * bulge / 2;
+            if (sagitta.abs() > 0) {
+              pMinX -= sagitta.abs();
+              pMinY -= sagitta.abs();
+              pMaxX += sagitta.abs();
+              pMaxY += sagitta.abs();
+            }
+          }
+        }
         entities.add({
           'type': 'LWPOLYLINE',
           'layer': layer,
           'color': colorCode,
           'points': points,
           'closed': raw['closed'] ?? false,
+          'aabb': [pMinX, pMinY, pMaxX, pMaxY],
         });
         layers.add(layer);
         if (!isSpecialLayer) {
@@ -949,6 +983,7 @@ class DxfService {
           'layer': layer,
           'color': colorCode,
           'cx': cx, 'cy': cy, 'radius': radius,
+          'aabb': [cx - radius, cy - radius, cx + radius, cy + radius],
         });
         layers.add(layer);
         if (!isSpecialLayer) {
@@ -971,6 +1006,7 @@ class DxfService {
           'color': colorCode,
           'cx': cx, 'cy': cy, 'radius': radius,
           'startAngle': startAngle, 'endAngle': endAngle,
+          'aabb': [cx - radius, cy - radius, cx + radius, cy + radius],
         });
         layers.add(layer);
         if (!isSpecialLayer) {
@@ -986,12 +1022,15 @@ class DxfService {
         final height = (raw['height'] as double?) ?? 2.5;
         if (!isInRange(x, y)) continue;
 
+        // 텍스트 AABB: 대략적으로 높이×글자수 크기
+        final textWidth = height * text.length * 0.7;
         entities.add({
           'type': 'TEXT',
           'layer': layer,
           'color': colorCode,
           'x': x, 'y': y,
           'text': text, 'height': height,
+          'aabb': [x, y, x + textWidth, y + height],
         });
         layers.add(layer);
         if (!isSpecialLayer) {
@@ -1008,6 +1047,7 @@ class DxfService {
           'layer': layer,
           'color': colorCode,
           'x': x, 'y': y,
+          'aabb': [x, y, x, y],
         });
         layers.add(layer);
         if (!isSpecialLayer) {

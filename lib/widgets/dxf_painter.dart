@@ -1,7 +1,9 @@
 import 'dart:math';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 /// DXF 도면을 렌더링하는 CustomPainter
+/// Picture 캐싱: 줌/레이어 변경 시 ui.Picture로 녹화, 패닝 시 translate+drawPicture로 재생
 class DxfPainter extends CustomPainter {
   final List<dynamic> entities;
   final Map<String, dynamic> bounds;
@@ -9,12 +11,19 @@ class DxfPainter extends CustomPainter {
   final Offset offset;
   final Set<String> hiddenLayers;
 
+  /// 캐시된 Picture (offset=0으로 녹화됨, 패닝/줌 시 transform+drawPicture로 재생)
+  final ui.Picture? cachedPicture;
+  /// 캐시 녹화 시의 줌 레벨 (줌 변경 시 스케일 보정용)
+  final double cacheZoom;
+
   DxfPainter({
     required this.entities,
     required this.bounds,
     this.zoom = 1.0,
     this.offset = Offset.zero,
     this.hiddenLayers = const {},
+    this.cachedPicture,
+    this.cacheZoom = 1.0,
   });
 
   @override
@@ -27,7 +36,28 @@ class DxfPainter extends CustomPainter {
       Paint()..color = Colors.grey[900]!,
     );
 
-    // DXF 좌표계를 화면 좌표계로 변환
+    if (cachedPicture != null) {
+      // 고속 경로: 캐시된 Picture를 transform하여 재생
+      // Picture는 offset=0, zoom=cacheZoom으로 녹화됨
+      canvas.save();
+      final r = zoom / cacheZoom; // 스케일 비율
+      // 캔버스 중앙 기준 스케일 + 오프셋 적용
+      // 수학: desired(x) = r*(cached(x) - W/2) + W/2 + offset.dx
+      //       desired(y) = r*(cached(y) - H/2) + H/2 - offset.dy
+      canvas.translate(size.width / 2 + offset.dx, size.height / 2 - offset.dy);
+      canvas.scale(r, r);
+      canvas.translate(-size.width / 2, -size.height / 2);
+      canvas.drawPicture(cachedPicture!);
+      canvas.restore();
+    } else {
+      // 폴백: 직접 렌더링 (캐시 없을 때)
+      paintEntities(canvas, size);
+    }
+  }
+
+  /// 엔티티 배치 렌더링 (뷰포트 컬링 + 색상별 Path 배치)
+  /// [enableCulling]: false면 뷰포트 컬링 스킵 (Picture 캐시 빌드 시)
+  void paintEntities(Canvas canvas, Size size, {bool enableCulling = true}) {
     final minX = bounds['minX'] as double;
     final minY = bounds['minY'] as double;
     final maxX = bounds['maxX'] as double;
@@ -35,247 +65,154 @@ class DxfPainter extends CustomPainter {
 
     final dxfWidth = maxX - minX;
     final dxfHeight = maxY - minY;
-
     if (dxfWidth <= 0 || dxfHeight <= 0) return;
 
-    // 화면에 맞게 스케일 계산 (여백 10% 추가)
     final scaleX = size.width * 0.9 / dxfWidth;
     final scaleY = size.height * 0.9 / dxfHeight;
     final baseScale = scaleX < scaleY ? scaleX : scaleY;
     final scale = baseScale * zoom;
 
-    // 중앙 정렬을 위한 오프셋
     final centerOffsetX = (size.width - dxfWidth * scale) / 2;
     final centerOffsetY = (size.height - dxfHeight * scale) / 2;
 
-    // 좌표 변환 함수
-    Offset transformPoint(double x, double y) {
-      final screenX = (x - minX) * scale + centerOffsetX + offset.dx;
-      // Y축 반전 (DXF는 위가 +, Flutter는 아래가 +)
-      final screenY =
-          size.height - ((y - minY) * scale + centerOffsetY + offset.dy);
-      return Offset(screenX, screenY);
+    // 뷰포트 컬링 범위
+    double cullMinX = -1e18, cullMaxX = 1e18, cullMinY = -1e18, cullMaxY = 1e18;
+    if (enableCulling) {
+      final viewMinX = (-centerOffsetX - offset.dx) / scale + minX;
+      final viewMaxX = (size.width - centerOffsetX - offset.dx) / scale + minX;
+      final viewMaxY = (size.height - centerOffsetY - offset.dy) / scale + minY;
+      final viewMinY = (-centerOffsetY - offset.dy) / scale + minY;
+      final margin = (viewMaxX - viewMinX) * 0.05;
+      cullMinX = viewMinX - margin;
+      cullMaxX = viewMaxX + margin;
+      cullMinY = viewMinY - margin;
+      cullMaxY = viewMaxY + margin;
     }
 
-    // 엔티티 그리기
-    final strokeWidth = baseScale < 0.01 ? 3.0 : (baseScale < 0.1 ? 2.0 : 1.0);
+    // 좌표 변환 함수
+    Offset tx(double x, double y) {
+      return Offset(
+        (x - minX) * scale + centerOffsetX + offset.dx,
+        size.height - ((y - minY) * scale + centerOffsetY + offset.dy),
+      );
+    }
+
+    // sqrt(zoom) 비례 선 두께: 캐시 스케일링↔재빌드 간 팝 최소화 + 고줌에서 과도한 굵기 방지
+    // 팝 비율 = sqrt(줌변화비), 예) 2배 줌 시 1.41배 차이 (거의 안 보임)
+    final baseStroke = baseScale < 0.01 ? 1.2 : (baseScale < 0.1 ? 0.9 : 0.6);
+    final strokeWidth = baseStroke * sqrt(zoom);
+
+    // === 색상별 배치 수집 ===
+    final Map<int, Path> strokePaths = {};
+    final Map<int, Path> fillPaths = {};
+    final Map<int, Color> colorLookup = {};
+    final List<(Map<String, dynamic>, Color)> textEntities = [];
+    final List<(Map<String, dynamic>, Color)> hatchEntities = [];
 
     for (final entity in entities) {
       final type = entity['type'] as String;
-      final colorCode = entity['color'] as int?;
       final layer = entity['layer'] as String?;
-
       if (layer != null && hiddenLayers.contains(layer)) continue;
 
-      final color = _getEntityColor(colorCode, layer);
+      // 뷰포트 컬링
+      if (enableCulling) {
+        final aabb = entity['aabb'] as List?;
+        if (aabb != null) {
+          if (aabb[2] < cullMinX || aabb[0] > cullMaxX ||
+              aabb[3] < cullMinY || aabb[1] > cullMaxY) continue;
+        }
+      }
 
-      final paint = Paint()
-        ..color = color
-        ..strokeWidth = strokeWidth
-        ..style = PaintingStyle.stroke;
+      final colorCode = entity['color'] as int?;
+      final color = _getEntityColor(colorCode, layer);
+      final ck = color.toARGB32();
 
       switch (type) {
         case 'LINE':
-          _drawLine(canvas, entity, transformPoint, paint);
+          colorLookup.putIfAbsent(ck, () => color);
+          final path = strokePaths.putIfAbsent(ck, () => Path());
+          final p1 = tx(entity['x1'] as double, entity['y1'] as double);
+          final p2 = tx(entity['x2'] as double, entity['y2'] as double);
+          path.moveTo(p1.dx, p1.dy);
+          path.lineTo(p2.dx, p2.dy);
           break;
+
         case 'LWPOLYLINE':
-          _drawPolyline(canvas, entity, transformPoint, paint);
+          colorLookup.putIfAbsent(ck, () => color);
+          final path = strokePaths.putIfAbsent(ck, () => Path());
+          _addPolylineToPath(path, entity, tx);
           break;
+
         case 'CIRCLE':
-          _drawCircle(canvas, entity, transformPoint, paint, scale);
+          colorLookup.putIfAbsent(ck, () => color);
+          final path = strokePaths.putIfAbsent(ck, () => Path());
+          final center = tx(entity['cx'] as double, entity['cy'] as double);
+          path.addOval(Rect.fromCircle(
+            center: center,
+            radius: (entity['radius'] as double) * scale,
+          ));
           break;
+
         case 'ARC':
-          _drawArc(canvas, entity, transformPoint, paint, scale);
+          colorLookup.putIfAbsent(ck, () => color);
+          final path = strokePaths.putIfAbsent(ck, () => Path());
+          _addArcToPath(path, entity, tx, scale);
           break;
-        case 'TEXT':
-          _drawText(canvas, entity, transformPoint, color, scale);
-          break;
+
         case 'POINT':
-          _drawPoint(canvas, entity, transformPoint, paint);
+          colorLookup.putIfAbsent(ck, () => color);
+          final path = fillPaths.putIfAbsent(ck, () => Path());
+          final pos = tx(entity['x'] as double, entity['y'] as double);
+          path.addOval(Rect.fromCircle(center: pos, radius: 2.0));
           break;
+
+        case 'TEXT':
+          textEntities.add((entity, color));
+          break;
+
         case 'HATCH':
-          _drawHatch(canvas, entity, transformPoint, paint, scale);
+          hatchEntities.add((entity, color));
           break;
       }
     }
-  }
 
-  /// DXF 색상 코드를 Flutter Color로 변환
-  Color _getEntityColor(int? colorCode, String? layer) {
-    if (colorCode == null || colorCode == 0) {
-      return _getLayerColor(layer ?? '0');
+    // === 렌더링: HATCH(배경) → 배치 지오메트리 → TEXT(전경) ===
+
+    final hatchPaint = Paint()..strokeWidth = strokeWidth..style = PaintingStyle.stroke;
+    for (final (entity, color) in hatchEntities) {
+      hatchPaint.color = color;
+      _drawHatch(canvas, entity, tx, hatchPaint, scale);
     }
 
-    final absColorCode = colorCode.abs();
+    final batchPaint = Paint()
+      ..strokeWidth = strokeWidth
+      ..style = PaintingStyle.stroke;
+    for (final entry in strokePaths.entries) {
+      batchPaint.color = colorLookup[entry.key]!;
+      canvas.drawPath(entry.value, batchPaint);
+    }
 
-    switch (absColorCode) {
-      case 1:
-        return const Color(0xFFFF0000);
-      case 2:
-        return const Color(0xFFFFFF00);
-      case 3:
-        return const Color(0xFF00FF00);
-      case 4:
-        return const Color(0xFF00FFFF);
-      case 5:
-        return const Color(0xFF0000FF);
-      case 6:
-        return const Color(0xFFFF00FF);
-      case 7:
-        return const Color(0xFFFFFFFF);
-      case 8:
-        return const Color(0xFF414141);
-      case 9:
-        return const Color(0xFF808080);
-      case 10:
-        return const Color(0xFFFF0000);
-      case 11:
-        return const Color(0xFFFFAAAA);
-      case 12:
-        return const Color(0xFFBD0000);
-      case 13:
-        return const Color(0xFFBD7E7E);
-      case 14:
-        return const Color(0xFF810000);
-      case 20:
-        return const Color(0xFFFF7F00);
-      case 30:
-        return const Color(0xFFFF7F7F);
-      case 40:
-        return const Color(0xFFFF3F3F);
-      case 50:
-        return const Color(0xFF7F3F00);
-      case 60:
-        return const Color(0xFFFF7F3F);
-      case 70:
-        return const Color(0xFFBD7E00);
-      case 80:
-        return const Color(0xFF7F7F00);
-      case 90:
-        return const Color(0xFFBDBD00);
-      case 91:
-        return const Color(0xFF7FFF7F);
-      case 92:
-        return const Color(0xFF00BD00);
-      case 93:
-        return const Color(0xFF007F00);
-      case 94:
-        return const Color(0xFF3FFF3F);
-      case 95:
-        return const Color(0xFF00FF7F);
-      case 100:
-        return const Color(0xFF00BDBD);
-      case 110:
-        return const Color(0xFF7FFFFF);
-      case 120:
-        return const Color(0xFF007FBD);
-      case 130:
-        return const Color(0xFF0000BD);
-      case 140:
-        return const Color(0xFF3F3FFF);
-      case 150:
-        return const Color(0xFF00007F);
-      case 160:
-        return const Color(0xFF7F7FFF);
-      case 170:
-        return const Color(0xFF3F00BD);
-      case 180:
-        return const Color(0xFF7F00FF);
-      case 190:
-        return const Color(0xFFBD007F);
-      case 200:
-        return const Color(0xFFFF00FF);
-      case 210:
-        return const Color(0xFFFF7FFF);
-      case 220:
-        return const Color(0xFFFF3FBD);
-      case 230:
-        return const Color(0xFFBDBDBD);
-      case 240:
-        return const Color(0xFF7F7F7F);
-      case 250:
-        return const Color(0xFF3F3F3F);
-      case 251:
-        return const Color(0xFFC0C0C0);
-      case 252:
-        return const Color(0xFF989898);
-      case 253:
-        return const Color(0xFF707070);
-      case 254:
-        return const Color(0xFF484848);
-      case 255:
-        return const Color(0xFF000000);
-      default:
-        return const Color(0xFFFFFFFF);
+    final fillPaint = Paint()..style = PaintingStyle.fill;
+    for (final entry in fillPaths.entries) {
+      fillPaint.color = colorLookup[entry.key]!;
+      canvas.drawPath(entry.value, fillPaint);
+    }
+
+    for (final (entity, color) in textEntities) {
+      _drawText(canvas, entity, tx, color, scale);
     }
   }
 
-  Color _getLayerColor(String layer) {
-    final layerUpper = layer.toUpperCase();
+  // ===== 배치 Path 빌더 =====
 
-    if (layerUpper.contains('측점') ||
-        layerUpper.contains('NO') ||
-        layerUpper.contains('STA')) {
-      return Colors.cyan;
-    } else if (layerUpper.contains('계획') ||
-        layerUpper.contains('PLAN') ||
-        layerUpper.contains('DESIGN')) {
-      return Colors.red;
-    } else if (layerUpper.contains('현황') || layerUpper.contains('EXIST')) {
-      return Colors.green;
-    } else if (layerUpper.contains('제방') ||
-        layerUpper.contains('BANK') ||
-        layerUpper.contains('LEVEE')) {
-      return Colors.yellow;
-    } else if (layerUpper.contains('홍수위') ||
-        layerUpper.contains('FLOOD') ||
-        layerUpper.contains('WATER')) {
-      return Colors.blue;
-    } else if (layerUpper.contains('문자') ||
-        layerUpper.contains('TEXT') ||
-        layerUpper.contains('DIM')) {
-      return Colors.white70;
-    } else if (layerUpper.contains('포장') ||
-        layerUpper.contains('PAVEMENT') ||
-        layerUpper.contains('PAVE')) {
-      return Colors.grey[400]!;
-    } else if (layerUpper.contains('중심') ||
-        layerUpper.contains('CENTER') ||
-        layerUpper.contains('CL')) {
-      return Colors.orange;
-    } else if (layerUpper.contains('경계') ||
-        layerUpper.contains('BOUNDARY') ||
-        layerUpper.contains('BORDER')) {
-      return Colors.purple;
-    } else {
-      return Colors.white;
-    }
-  }
-
-  void _drawLine(
-    Canvas canvas,
+  void _addPolylineToPath(
+    Path path,
     Map<String, dynamic> entity,
     Offset Function(double, double) transform,
-    Paint paint,
-  ) {
-    final x1 = entity['x1'] as double;
-    final y1 = entity['y1'] as double;
-    final x2 = entity['x2'] as double;
-    final y2 = entity['y2'] as double;
-
-    canvas.drawLine(transform(x1, y1), transform(x2, y2), paint);
-  }
-
-  void _drawPolyline(
-    Canvas canvas,
-    Map<String, dynamic> entity,
-    Offset Function(double, double) transform,
-    Paint paint,
   ) {
     final points = entity['points'] as List;
     if (points.length < 2) return;
 
-    final path = Path();
     final firstPoint = points[0] as Map<String, dynamic>;
     final start = transform(firstPoint['x'], firstPoint['y']);
     path.moveTo(start.dx, start.dy);
@@ -286,13 +223,7 @@ class DxfPainter extends CustomPainter {
       final bulge = p1['bulge'] as double? ?? 0.0;
 
       if (bulge.abs() > 1e-10) {
-        _drawBulgeSegment(
-          path,
-          p1['x'], p1['y'],
-          p2['x'], p2['y'],
-          bulge,
-          transform,
-        );
+        _drawBulgeSegment(path, p1['x'], p1['y'], p2['x'], p2['y'], bulge, transform);
       } else {
         final end = transform(p2['x'], p2['y']);
         path.lineTo(end.dx, end.dy);
@@ -302,34 +233,44 @@ class DxfPainter extends CustomPainter {
     final closed = entity['closed'] as bool? ?? false;
     if (closed && points.isNotEmpty) {
       final lastPoint = points.last as Map<String, dynamic>;
-      final firstPoint = points.first as Map<String, dynamic>;
+      final fp = points.first as Map<String, dynamic>;
       final bulge = lastPoint['bulge'] as double? ?? 0.0;
 
       if (bulge.abs() > 1e-10) {
-        _drawBulgeSegment(
-          path,
-          lastPoint['x'], lastPoint['y'],
-          firstPoint['x'], firstPoint['y'],
-          bulge,
-          transform,
-        );
+        _drawBulgeSegment(path, lastPoint['x'], lastPoint['y'], fp['x'], fp['y'], bulge, transform);
       } else {
         path.close();
       }
     }
-
-    canvas.drawPath(path, paint);
   }
 
-  /// Bulge → arc 변환 (Lee Mac 공식)
-  ///
-  /// DXF bulge 정의:
-  ///   bulge = tan(포함각/4)
-  ///   양수 = CCW (Y-up 기준), 음수 = CW
-  ///
-  /// Y축 반전(transform)에 의해 화면에서 방향이 뒤집히므로:
-  ///   DXF 양수 bulge(CCW) → 화면 CW → clockwise: true
-  ///   DXF 음수 bulge(CW)  → 화면 CCW → clockwise: false
+  void _addArcToPath(
+    Path path,
+    Map<String, dynamic> entity,
+    Offset Function(double, double) transform,
+    double scale,
+  ) {
+    final cx = entity['cx'] as double;
+    final cy = entity['cy'] as double;
+    final radius = entity['radius'] as double;
+    final startAngle = entity['startAngle'] as double;
+    final endAngle = entity['endAngle'] as double;
+
+    final center = transform(cx, cy);
+    final scaledRadius = radius * scale;
+
+    final startRad = -startAngle * pi / 180.0;
+    double includedDeg = endAngle - startAngle;
+    if (includedDeg <= 0) includedDeg += 360.0;
+    final sweepRad = -includedDeg * pi / 180.0;
+
+    final rect = Rect.fromCircle(center: center, radius: scaledRadius);
+    final sx = center.dx + scaledRadius * cos(startRad);
+    final sy = center.dy + scaledRadius * sin(startRad);
+    path.moveTo(sx, sy);
+    path.arcTo(rect, startRad, sweepRad, false);
+  }
+
   void _drawBulgeSegment(
     Path path,
     double x1, double y1,
@@ -354,14 +295,9 @@ class DxfPainter extends CustomPainter {
       return;
     }
 
-    // radius = chord × (1 + bulge²) / (4 × |bulge|)
     final absB = bulge.abs();
     final radius = (chord * (1 + absB * absB)) / (4 * absB);
 
-    // DXF: 양수 bulge = CCW, 음수 bulge = CW
-    // Flutter arcToPoint clockwise 기본값 = true
-    // Y축 반전 후에도 arcToPoint가 화면 좌표 기준으로 자체 판단하므로
-    // 원본 bulge 부호를 그대로 사용: 양수 = CCW → clockwise: false
     path.arcToPoint(
       p2Screen,
       radius: Radius.circular(radius),
@@ -370,52 +306,94 @@ class DxfPainter extends CustomPainter {
     );
   }
 
-  void _drawCircle(
-    Canvas canvas,
-    Map<String, dynamic> entity,
-    Offset Function(double, double) transform,
-    Paint paint,
-    double scale,
-  ) {
-    final cx = entity['cx'] as double;
-    final cy = entity['cy'] as double;
-    final radius = entity['radius'] as double;
+  // ===== 색상 매핑 =====
 
-    final center = transform(cx, cy);
-    canvas.drawCircle(center, radius * scale, paint);
+  Color _getEntityColor(int? colorCode, String? layer) {
+    if (colorCode == null || colorCode == 0) {
+      return _getLayerColor(layer ?? '0');
+    }
+
+    final absColorCode = colorCode.abs();
+
+    switch (absColorCode) {
+      case 1: return const Color(0xFFFF0000);
+      case 2: return const Color(0xFFFFFF00);
+      case 3: return const Color(0xFF00FF00);
+      case 4: return const Color(0xFF00FFFF);
+      case 5: return const Color(0xFF0000FF);
+      case 6: return const Color(0xFFFF00FF);
+      case 7: return const Color(0xFFFFFFFF);
+      case 8: return const Color(0xFF414141);
+      case 9: return const Color(0xFF808080);
+      case 10: return const Color(0xFFFF0000);
+      case 11: return const Color(0xFFFFAAAA);
+      case 12: return const Color(0xFFBD0000);
+      case 13: return const Color(0xFFBD7E7E);
+      case 14: return const Color(0xFF810000);
+      case 20: return const Color(0xFFFF7F00);
+      case 30: return const Color(0xFFFF7F7F);
+      case 40: return const Color(0xFFFF3F3F);
+      case 50: return const Color(0xFF7F3F00);
+      case 60: return const Color(0xFFFF7F3F);
+      case 70: return const Color(0xFFBD7E00);
+      case 80: return const Color(0xFF7F7F00);
+      case 90: return const Color(0xFFBDBD00);
+      case 91: return const Color(0xFF7FFF7F);
+      case 92: return const Color(0xFF00BD00);
+      case 93: return const Color(0xFF007F00);
+      case 94: return const Color(0xFF3FFF3F);
+      case 95: return const Color(0xFF00FF7F);
+      case 100: return const Color(0xFF00BDBD);
+      case 110: return const Color(0xFF7FFFFF);
+      case 120: return const Color(0xFF007FBD);
+      case 130: return const Color(0xFF0000BD);
+      case 140: return const Color(0xFF3F3FFF);
+      case 150: return const Color(0xFF00007F);
+      case 160: return const Color(0xFF7F7FFF);
+      case 170: return const Color(0xFF3F00BD);
+      case 180: return const Color(0xFF7F00FF);
+      case 190: return const Color(0xFFBD007F);
+      case 200: return const Color(0xFFFF00FF);
+      case 210: return const Color(0xFFFF7FFF);
+      case 220: return const Color(0xFFFF3FBD);
+      case 230: return const Color(0xFFBDBDBD);
+      case 240: return const Color(0xFF7F7F7F);
+      case 250: return const Color(0xFF3F3F3F);
+      case 251: return const Color(0xFFC0C0C0);
+      case 252: return const Color(0xFF989898);
+      case 253: return const Color(0xFF707070);
+      case 254: return const Color(0xFF484848);
+      case 255: return const Color(0xFF000000);
+      default: return const Color(0xFFFFFFFF);
+    }
   }
 
-  /// ★ ARC 엔티티: Y축 반전에 따른 각도 보정 추가
-  void _drawArc(
-    Canvas canvas,
-    Map<String, dynamic> entity,
-    Offset Function(double, double) transform,
-    Paint paint,
-    double scale,
-  ) {
-    final cx = entity['cx'] as double;
-    final cy = entity['cy'] as double;
-    final radius = entity['radius'] as double;
-    final startAngle = entity['startAngle'] as double;
-    final endAngle = entity['endAngle'] as double;
-
-    final center = transform(cx, cy);
-    final scaledRadius = radius * scale;
-
-    // DXF: degree, CCW, Y-up → Flutter: radian, Y-down
-    // Y축 반전으로 각도 부호 반전
-    final startRad = -startAngle * pi / 180.0;
-
-    // DXF arc 포함각 (항상 CCW: endAngle - startAngle)
-    double includedDeg = endAngle - startAngle;
-    if (includedDeg <= 0) includedDeg += 360.0;
-
-    // Y축 반전 후 CW가 되므로 sweep은 음수
-    final sweepRad = -includedDeg * pi / 180.0;
-
-    final rect = Rect.fromCircle(center: center, radius: scaledRadius);
-    canvas.drawArc(rect, startRad, sweepRad, false, paint);
+  Color _getLayerColor(String layer) {
+    final layerUpper = layer.toUpperCase();
+    if (layerUpper.contains('측점') || layerUpper.contains('NO') || layerUpper.contains('STA')) {
+      return Colors.cyan;
+    } else if (layerUpper.contains('계획') || layerUpper.contains('PLAN') || layerUpper.contains('DESIGN')) {
+      return Colors.red;
+    } else if (layerUpper.contains('현황') || layerUpper.contains('EXIST')) {
+      return Colors.green;
+    } else if (layerUpper.contains('제방') || layerUpper.contains('BANK') || layerUpper.contains('LEVEE')) {
+      return Colors.yellow;
+    } else if (layerUpper.contains('홍수위') || layerUpper.contains('FLOOD') || layerUpper.contains('WATER')) {
+      return Colors.blue;
+    } else if (layerUpper.contains('문자') || layerUpper.contains('TEXT') || layerUpper.contains('DIM')) {
+      return Colors.white70;
+    } else if (layerUpper.contains('포장') || layerUpper.contains('PAVEMENT') || layerUpper.contains('PAVE')) {
+      return Colors.grey[400]!;
+    } else if (layerUpper.contains('중심') || layerUpper.contains('CENTER') || layerUpper.contains('CL')) {
+      return Colors.orange;
+    } else if (layerUpper.contains('경계') || layerUpper.contains('BOUNDARY') || layerUpper.contains('BORDER')) {
+      return Colors.purple;
+    } else {
+      return Colors.white;
+    }
   }
+
+  // ===== 개별 렌더링 (TEXT, HATCH) =====
 
   void _drawText(
     Canvas canvas,
@@ -431,8 +409,7 @@ class DxfPainter extends CustomPainter {
 
     final position = transform(x, y);
     final scaledHeight = height * scale;
-
-    if (scaledHeight < 2.0) return;
+    if (scaledHeight < 3.0) return;
 
     final textSpan = TextSpan(
       text: text,
@@ -452,19 +429,6 @@ class DxfPainter extends CustomPainter {
     textPainter.paint(canvas, position);
   }
 
-  void _drawPoint(
-    Canvas canvas,
-    Map<String, dynamic> entity,
-    Offset Function(double, double) transform,
-    Paint paint,
-  ) {
-    final x = entity['x'] as double;
-    final y = entity['y'] as double;
-
-    final position = transform(x, y);
-    canvas.drawCircle(position, 2.0, paint..style = PaintingStyle.fill);
-  }
-
   void _drawHatch(
     Canvas canvas,
     Map<String, dynamic> entity,
@@ -479,12 +443,12 @@ class DxfPainter extends CustomPainter {
     final patternLines = entity['patternLines'] as List? ?? [];
     final patternScale = (entity['patternScale'] as double?) ?? 1.0;
 
+    final hatchStroke = 0.3 * sqrt(zoom);
     final strokePaint = Paint()
       ..color = paint.color.withValues(alpha: 0.5)
-      ..strokeWidth = 0.5
+      ..strokeWidth = hatchStroke
       ..style = PaintingStyle.stroke;
 
-    // 모든 경계를 하나의 combinedPath에 합침
     Path? combinedPath;
     for (final boundary in boundaries) {
       final segs = boundary as List;
@@ -506,14 +470,12 @@ class DxfPainter extends CustomPainter {
     if (combinedPath == null) return;
 
     if (isSolid || patternLines.isEmpty) {
-      // 솔리드 해치: 채우기 + 경계선
       final fillPaint = Paint()
         ..color = paint.color.withValues(alpha: 0.3)
         ..style = PaintingStyle.fill;
       canvas.drawPath(combinedPath, fillPaint);
       canvas.drawPath(combinedPath, strokePaint);
     } else {
-      // 패턴 해치: 반투명 배경 + 패턴 라인
       final bgPaint = Paint()
         ..color = paint.color.withValues(alpha: 0.1)
         ..style = PaintingStyle.fill;
@@ -524,7 +486,7 @@ class DxfPainter extends CustomPainter {
 
       final patternPaint = Paint()
         ..color = paint.color.withValues(alpha: 0.7)
-        ..strokeWidth = 0.5
+        ..strokeWidth = hatchStroke
         ..style = PaintingStyle.stroke;
 
       final clipBounds = combinedPath.getBounds();
@@ -544,13 +506,10 @@ class DxfPainter extends CustomPainter {
       }
 
       canvas.restore();
-      // 경계선
       canvas.drawPath(combinedPath, strokePaint);
     }
   }
 
-  /// 해치 패턴 라인 한 세트를 그리기
-  /// angle: 라인 방향(도), ox/oy: 원점(DXF), dx/dy: 반복 오프셋(DXF), dashes: 대시 패턴(DXF 단위)
   void _drawHatchPatternLine(
     Canvas canvas,
     Offset Function(double, double) transform,
@@ -563,30 +522,23 @@ class DxfPainter extends CustomPainter {
     List<double> dashes,
     double patternScale,
   ) {
-    // DXF 단위의 반복 간격 (dy가 라인 간 수직 간격)
     final spacing = dy.abs() * patternScale;
     if (spacing < 1e-6) return;
 
-    // 화면 좌표 기준 간격
     final screenSpacing = spacing * scale;
-    // 간격이 너무 작으면 그리지 않음 (2px 미만이면 의미없음)
     if (screenSpacing < 2.0) return;
 
-    // 클립 영역의 화면 크기
     final clipW = clipBounds.width;
     final clipH = clipBounds.height;
     final diagScreen = sqrt(clipW * clipW + clipH * clipH);
 
-    // 필요한 라인 수 계산 — 제한 초과 시 간격 늘려서 그리기
     var actualSpacing = screenSpacing;
     var lineCount = (diagScreen / actualSpacing).ceil() + 2;
-    // 라인이 너무 많으면 간격을 늘려서 최대 150개로 제한
     if (lineCount > 150) {
       actualSpacing = diagScreen / 150.0;
       lineCount = 150;
     }
 
-    // 화면 좌표에서 직접 라인 그리기 (Y축 반전 고려)
     final angleRad = angle * pi / 180.0;
     final screenAngleRad = -angleRad;
     final sDirX = cos(screenAngleRad);
@@ -598,7 +550,6 @@ class DxfPainter extends CustomPainter {
     final centerY = clipBounds.center.dy;
     final halfLineLen = diagScreen;
 
-    // 대시는 간격이 충분할 때만
     final screenDashes = dashes.map((d) => d * patternScale * scale).toList();
     final hasDash = screenDashes.isNotEmpty
         && screenDashes.any((d) => d.abs() > 0.5)
@@ -619,7 +570,6 @@ class DxfPainter extends CustomPainter {
     }
   }
 
-  /// 대시 패턴 라인 그리기 (양수=그리기, 음수=빈칸, 0=점)
   void _drawDashedLine(Canvas canvas, Offset p1, Offset p2, List<double> dashes, Paint paint) {
     final dx = p2.dx - p1.dx;
     final dy = p2.dy - p1.dy;
@@ -637,7 +587,6 @@ class DxfPainter extends CustomPainter {
       final segEnd = (t + dashLen).clamp(0.0, totalLen);
 
       if (dashLen < 0.01) {
-        // 점 (dot)
         final px = p1.dx + ux * t;
         final py = p1.dy + uy * t;
         canvas.drawCircle(Offset(px, py), 0.5, paint..style = PaintingStyle.fill);
@@ -696,13 +645,11 @@ class DxfPainter extends CustomPainter {
         final scaledR = radius * scale;
         final center = transform(cx, cy);
 
-        // 호 시작점으로 이동
         final saRad = -sa * pi / 180.0;
         final startPt = Offset(center.dx + scaledR * cos(saRad), center.dy + scaledR * sin(saRad));
         if (first) { path.moveTo(startPt.dx, startPt.dy); first = false; }
         else { path.lineTo(startPt.dx, startPt.dy); }
 
-        // sweep 계산
         double includedDeg = ccw ? (ea - sa) : (sa - ea);
         if (includedDeg <= 0) includedDeg += 360.0;
         final sweepRad = ccw ? -(includedDeg * pi / 180.0) : (includedDeg * pi / 180.0);
@@ -722,6 +669,8 @@ class DxfPainter extends CustomPainter {
         oldDelegate.bounds != bounds ||
         oldDelegate.zoom != zoom ||
         oldDelegate.offset != offset ||
-        oldDelegate.hiddenLayers != hiddenLayers;
+        oldDelegate.hiddenLayers != hiddenLayers ||
+        oldDelegate.cachedPicture != cachedPicture ||
+        oldDelegate.cacheZoom != cacheZoom;
   }
 }
