@@ -8,6 +8,8 @@ class NmeaPosition {
   final int fixQuality; // 0=무효, 1=GPS, 2=DGPS, 4=RTK Fixed, 5=RTK Float
   final int satellites;
   final DateTime? utcTime;
+  final double? hdop;
+  final double? diffAge; // 차분 보정 나이 (초)
 
   const NmeaPosition({
     required this.latitude,
@@ -16,8 +18,12 @@ class NmeaPosition {
     this.fixQuality = 0,
     this.satellites = 0,
     this.utcTime,
+    this.hdop,
+    this.diffAge,
   });
 
+  /// fixQuality: 0=무효, 1=GPS, 2=DGPS, 4=RTK Fixed, 5=RTK Float
+  /// 좌표가 유효하면 true (fixQuality >= 1)
   bool get hasValidFix => fixQuality > 0;
   bool get isRtkFixed => fixQuality == 4;
   bool get isRtkFloat => fixQuality == 5;
@@ -35,8 +41,10 @@ class NmeaPosition {
 
 class NmeaParser {
   NmeaPosition? _lastPosition;
+  double? _pdop; // GSA에서 파싱한 PDOP
 
   NmeaPosition? get lastPosition => _lastPosition;
+  double? get pdop => _pdop;
 
   /// NMEA 문장 파싱. 유효한 위치 정보가 있으면 NmeaPosition 반환
   NmeaPosition? parse(String sentence) {
@@ -52,17 +60,24 @@ class NmeaParser {
     final type = parts[0];
 
     // GGA: 위치 Fix 데이터 (가장 중요)
-    if (type == '\$GPGGA' || type == '\$GNGGA') {
+    // GP=GPS, GN=Multi, GL=GLONASS, GB/BD=BeiDou, GA=Galileo
+    if (type.endsWith('GGA')) {
       final pos = _parseGGA(parts);
       if (pos != null) _lastPosition = pos;
       return pos;
     }
 
     // RMC: 최소 항법 데이터
-    if (type == '\$GPRMC' || type == '\$GNRMC') {
+    if (type.endsWith('RMC')) {
       final pos = _parseRMC(parts);
       if (pos != null) _lastPosition = pos;
       return pos;
+    }
+
+    // GSA: DOP 및 위성 정보
+    if (type.endsWith('GSA')) {
+      _parseGSA(parts);
+      return null;
     }
 
     return null;
@@ -79,8 +94,11 @@ class NmeaParser {
 
     final fixQuality = int.tryParse(parts[6]) ?? 0;
     final satellites = int.tryParse(parts[7]) ?? 0;
+    final hdop = double.tryParse(parts[8]);
     final altitude = double.tryParse(parts[9]);
     final utcTime = _parseTime(parts[1]);
+    // 차분 보정 나이 (field 13)
+    final diffAge = parts.length > 13 ? double.tryParse(parts[13]) : null;
 
     return NmeaPosition(
       latitude: lat,
@@ -89,6 +107,8 @@ class NmeaParser {
       fixQuality: fixQuality,
       satellites: satellites,
       utcTime: utcTime,
+      hdop: hdop,
+      diffAge: diffAge,
     );
   }
 
@@ -119,6 +139,13 @@ class NmeaParser {
       satellites: prevSats,
       utcTime: utcTime,
     );
+  }
+
+  /// GSA 문장 파싱 — PDOP, HDOP, VDOP 추출
+  /// $GPGSA,A,3,prn,...,PDOP,HDOP,VDOP*hh
+  void _parseGSA(List<String> parts) {
+    if (parts.length < 17) return;
+    _pdop = double.tryParse(parts[15]);
   }
 
   /// DDMM.MMMM 형식을 십진도로 변환

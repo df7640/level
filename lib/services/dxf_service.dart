@@ -180,6 +180,8 @@ class DxfService {
         currentEntity['layer'] = value;
       } else if (code == 62) {
         currentEntity['color'] = int.tryParse(value);
+      } else if (code == 370) {
+        currentEntity['lineweight'] = int.tryParse(value);
       }
       // 엔티티별 처리 (ENTITIES 섹션과 동일)
       else if (type == 'LWPOLYLINE' && currentPolylinePoints != null) {
@@ -191,6 +193,8 @@ class DxfService {
           currentPolylinePoints.last['bulge'] = double.tryParse(value) ?? 0.0;
         } else if (code == 70) {
           currentEntity['closed'] = ((int.tryParse(value) ?? 0) & 1) != 0;
+        } else if (code == 43) {
+          currentEntity['constantWidth'] = double.tryParse(value) ?? 0.0;
         }
       } else if (type == 'LINE') {
         if (code == 10) currentEntity['x1'] = double.tryParse(value) ?? 0.0;
@@ -405,8 +409,9 @@ class DxfService {
 
     if (boundaries.isEmpty) return [];
 
-    // 패턴 데이터 파싱: 코드 78=패턴 라인 수, 각 라인=53/43/44/45/46/79/49
+    // 패턴 데이터 파싱: 코드 41=축척, 52=패턴각도, 78=패턴 라인 수
     double patternScale = 1.0;
+    double patternAngle = 0.0; // 코드 52: 해치 패턴 전체 회전 각도
     final patternLines = <Map<String, dynamic>>[];
     // 경계 뒤부터 패턴 데이터 탐색
     int pi = i;
@@ -416,6 +421,7 @@ class DxfService {
       final v = lines[pi + 1].trim();
       pi += 2;
       if (c == 41) { patternScale = double.tryParse(v) ?? 1.0; }
+      else if (c == 52) { patternAngle = double.tryParse(v) ?? 0.0; }
       else if (c == 78) {
         final lineCount = int.tryParse(v) ?? 0;
         for (int li = 0; li < lineCount && pi < hatchEnd - 1; li++) {
@@ -467,6 +473,7 @@ class DxfService {
       'patternName': patternName,
       'boundaries': boundaries,
       'patternScale': patternScale,
+      'patternAngle': patternAngle,
       'patternLines': patternLines,
     }];
   }
@@ -487,6 +494,7 @@ class DxfService {
     final rotDeg = (insert['rotation'] as double?) ?? 0.0;
     final insertLayer = insert['layer'] as String?;
     final insertColor = insert['color'] as int?;
+    final insertLw = insert['lineweight'] as int?;
     final cosR = cos(rotDeg * pi / 180.0);
     final sinR = sin(rotDeg * pi / 180.0);
 
@@ -500,6 +508,7 @@ class DxfService {
       final type = be['type'] as String;
       final layer = (be['layer'] as String?) ?? insertLayer ?? '0';
       final color = be['color'] as int? ?? insertColor;
+      final lw = be['lineweight'] as int? ?? insertLw;
 
       switch (type) {
         case 'LINE':
@@ -508,7 +517,7 @@ class DxfService {
           final x2 = (be['x2'] as double?) ?? 0;
           final y2 = (be['y2'] as double?) ?? 0;
           result.add({
-            'type': 'LINE', 'layer': layer, 'color': color,
+            'type': 'LINE', 'layer': layer, 'color': color, 'lineweight': lw,
             'x1': tx(x1, y1), 'y1': ty(x1, y1),
             'x2': tx(x2, y2), 'y2': ty(x2, y2),
           });
@@ -526,8 +535,9 @@ class DxfService {
             };
           }).toList();
           result.add({
-            'type': 'LWPOLYLINE', 'layer': layer, 'color': color,
+            'type': 'LWPOLYLINE', 'layer': layer, 'color': color, 'lineweight': lw,
             'points': newPoints, 'closed': be['closed'] ?? false,
+            'constantWidth': be['constantWidth'],
           });
           break;
         case 'CIRCLE':
@@ -535,9 +545,9 @@ class DxfService {
           final cy = (be['cy'] as double?) ?? 0;
           final r = (be['radius'] as double?) ?? 0;
           result.add({
-            'type': 'CIRCLE', 'layer': layer, 'color': color,
+            'type': 'CIRCLE', 'layer': layer, 'color': color, 'lineweight': lw,
             'cx': tx(cx, cy), 'cy': ty(cx, cy),
-            'radius': r * ((sx.abs() + sy.abs()) / 2), // 평균 스케일
+            'radius': r * ((sx.abs() + sy.abs()) / 2),
           });
           break;
         case 'ARC':
@@ -547,7 +557,7 @@ class DxfService {
           final sa = (be['startAngle'] as double?) ?? 0;
           final ea = (be['endAngle'] as double?) ?? 0;
           result.add({
-            'type': 'ARC', 'layer': layer, 'color': color,
+            'type': 'ARC', 'layer': layer, 'color': color, 'lineweight': lw,
             'cx': tx(cx, cy), 'cy': ty(cx, cy),
             'radius': r * ((sx.abs() + sy.abs()) / 2),
             'startAngle': sa + rotDeg, 'endAngle': ea + rotDeg,
@@ -557,7 +567,7 @@ class DxfService {
           final x = (be['x'] as double?) ?? 0;
           final y = (be['y'] as double?) ?? 0;
           result.add({
-            'type': 'TEXT', 'layer': layer, 'color': color,
+            'type': 'TEXT', 'layer': layer, 'color': color, 'lineweight': lw,
             'x': tx(x, y), 'y': ty(x, y),
             'text': be['text'] ?? '', 'height': ((be['height'] as double?) ?? 2.5) * sy.abs(),
           });
@@ -566,7 +576,7 @@ class DxfService {
           final x = (be['x'] as double?) ?? 0;
           final y = (be['y'] as double?) ?? 0;
           result.add({
-            'type': 'POINT', 'layer': layer, 'color': color,
+            'type': 'POINT', 'layer': layer, 'color': color, 'lineweight': lw,
             'x': tx(x, y), 'y': ty(x, y),
           });
           break;
@@ -671,6 +681,8 @@ class DxfService {
         currentEntity['layer'] = value;
       } else if (code == 62) {
         currentEntity['color'] = int.tryParse(value);
+      } else if (code == 370) {
+        currentEntity['lineweight'] = int.tryParse(value);
       }
       // INSERT 처리
       else if (type == 'INSERT') {
@@ -696,6 +708,8 @@ class DxfService {
         } else if (code == 70) {
           final flag = int.tryParse(value) ?? 0;
           currentEntity['closed'] = (flag & 1) != 0;
+        } else if (code == 43) {
+          currentEntity['constantWidth'] = double.tryParse(value) ?? 0.0;
         }
       }
       // LINE 처리
@@ -816,6 +830,60 @@ class DxfService {
     return layerColors;
   }
 
+  /// 레이어 테이블에서 lineweight 정보 추출
+  static Map<String, int> _parseLayerLineweights(String dxfContent) {
+    final layerLineweights = <String, int>{};
+    final lines = dxfContent.split('\n');
+    String? currentLayerName;
+    bool inLayerRecord = false;
+
+    for (int i = 0; i < lines.length - 1; i += 2) {
+      final code = int.tryParse(lines[i].trim());
+      if (code == null) { i--; continue; }
+      final value = lines[i + 1].trim();
+
+      if (code == 100 && value == 'AcDbLayerTableRecord') {
+        inLayerRecord = true;
+        continue;
+      }
+      if (inLayerRecord) {
+        if (code == 2) {
+          currentLayerName = value;
+        } else if (code == 370 && currentLayerName != null) {
+          final lw = int.tryParse(value);
+          if (lw != null && lw > 0) {
+            layerLineweights[currentLayerName] = lw;
+          }
+        } else if (code == 0) {
+          inLayerRecord = false;
+          currentLayerName = null;
+        }
+      }
+    }
+    return layerLineweights;
+  }
+
+  /// lineweight 값(hundredths of mm)을 화면 strokeWidth(px)로 변환
+  static double _resolveLineweight(int? entityLw, String layer,
+      Map<String, int> layerLineweights, double? constantWidth) {
+    // LWPOLYLINE constantWidth가 있으면 DXF 단위 폭 (scale은 painter에서 적용)
+    if (constantWidth != null && constantWidth > 0) {
+      return -constantWidth; // 음수 = DXF 단위 폭 (painter에서 scale 곱해야 함)
+    }
+
+    int lw = entityLw ?? -1;
+    // -1 = ByLayer
+    if (lw == -1) {
+      lw = layerLineweights[layer] ?? -1;
+    }
+    // -2 = ByBlock, -3 = Default, 0 = 기본
+    if (lw <= 0) return 0.5; // 기본 두께
+
+    // hundredths of mm → pixel width
+    // 25 (0.25mm) → 0.5px, 50 (0.50mm) → 1.0px, 100 (1.0mm) → 2.0px
+    return (lw / 50.0).clamp(0.5, 8.0);
+  }
+
   /// colorCode → ARGB int 변환 (파싱 시 1회만 수행)
   static int _resolveColor(int? colorCode, String layer, Map<String, int> layerColors) {
     int? code = colorCode;
@@ -901,8 +969,9 @@ class DxfService {
     final entities = <Map<String, dynamic>>[];
     final layers = <String>{};
 
-    // 1) 레이어 색상 추출
+    // 1) 레이어 색상/선두께 추출
     final layerColors = _parseLayerColors(dxfContent);
+    final layerLineweights = _parseLayerLineweights(dxfContent);
 
     // 2) raw 파서로 모든 엔티티 추출 (bulge 포함)
     final rawEntities = _parseRawDxfEntities(dxfContent);
@@ -961,6 +1030,10 @@ class DxfService {
         colorCode = layerColors[layer];
       }
       final resolvedColor = _resolveColor(raw['color'] as int?, layer, layerColors);
+      final resolvedLw = _resolveLineweight(
+        raw['lineweight'] as int?, layer, layerLineweights,
+        raw['constantWidth'] as double?,
+      );
 
       final isSpecialLayer = layer.contains('측점') ||
           layer.startsWith('#') ||
@@ -984,6 +1057,7 @@ class DxfService {
           'layer': layer,
           'color': colorCode,
           'resolvedColor': resolvedColor,
+          'lw': resolvedLw,
           'x1': x1, 'y1': y1,
           'x2': x2, 'y2': y2,
           'aabb': [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)],
@@ -1042,6 +1116,7 @@ class DxfService {
           'layer': layer,
           'color': colorCode,
           'resolvedColor': resolvedColor,
+          'lw': resolvedLw,
           'points': points,
           'closed': raw['closed'] ?? false,
           'aabb': [pMinX, pMinY, pMaxX, pMaxY],
@@ -1066,6 +1141,7 @@ class DxfService {
           'layer': layer,
           'color': colorCode,
           'resolvedColor': resolvedColor,
+          'lw': resolvedLw,
           'cx': cx, 'cy': cy, 'radius': radius,
           'aabb': [cx - radius, cy - radius, cx + radius, cy + radius],
         });
@@ -1089,6 +1165,7 @@ class DxfService {
           'layer': layer,
           'color': colorCode,
           'resolvedColor': resolvedColor,
+          'lw': resolvedLw,
           'cx': cx, 'cy': cy, 'radius': radius,
           'startAngle': startAngle, 'endAngle': endAngle,
           'aabb': [cx - radius, cy - radius, cx + radius, cy + radius],
@@ -1114,6 +1191,7 @@ class DxfService {
           'layer': layer,
           'color': colorCode,
           'resolvedColor': resolvedColor,
+          'lw': resolvedLw,
           'x': x, 'y': y,
           'text': text, 'height': height,
           'aabb': [x, y, x + textWidth, y + height],
@@ -1133,6 +1211,7 @@ class DxfService {
           'layer': layer,
           'color': colorCode,
           'resolvedColor': resolvedColor,
+          'lw': resolvedLw,
           'x': x, 'y': y,
           'aabb': [x, y, x, y],
         });
@@ -1154,6 +1233,7 @@ class DxfService {
           'patternName': raw['patternName'] ?? '',
           'boundaries': boundaries,
           'patternScale': raw['patternScale'] ?? 1.0,
+          'patternAngle': raw['patternAngle'] ?? 0.0,
           'patternLines': raw['patternLines'] ?? [],
         });
         layers.add(layer);

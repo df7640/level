@@ -65,6 +65,14 @@ class _DataTableScreenState extends State<DataTableScreen> {
     '계획제방고(R)': 'plannedBankRight',
     '노체(L)': 'roadbedLeft',
     '노체(R)': 'roadbedRight',
+    '기초터파기': 'foundationExcavation',
+    '옵셋좌': 'offsetLeft',
+    '옵셋우': 'offsetRight',
+    'LR': 'lr',
+    'Height': 'height',
+    '단수': 'singleCount',
+    '기울기': 'slope',
+    '각도': 'angle',
     'X': 'x',
     'Y': 'y',
   };
@@ -486,7 +494,8 @@ class _DataTableScreenState extends State<DataTableScreen> {
               final columnName = entry.key;
               final fieldName = entry.value;
               final value = _getFieldValue(station, fieldName);
-              final displayValue = value?.toStringAsFixed(widget.decimalPlaces) ?? '-';
+              final strValue = _getStringFieldValue(station, fieldName);
+              final displayValue = strValue ?? value?.toStringAsFixed(widget.decimalPlaces) ?? '-';
 
               // X, Y 좌표는 소수점이 길어서 라벨과 값을 붙여서 한줄에 표시
               final isCoordinate = fieldName == 'x' || fieldName == 'y';
@@ -909,6 +918,20 @@ class _DataTableScreenState extends State<DataTableScreen> {
         return station.roadbedLeft;
       case 'roadbedRight':
         return station.roadbedRight;
+      case 'foundationExcavation':
+        return station.foundationExcavation;
+      case 'offsetLeft':
+        return station.offsetLeft;
+      case 'offsetRight':
+        return station.offsetRight;
+      case 'height':
+        return station.height;
+      case 'singleCount':
+        return station.singleCount;
+      case 'slope':
+        return station.slope;
+      case 'angle':
+        return station.angle;
       case 'x':
         return station.x;
       case 'y':
@@ -916,6 +939,12 @@ class _DataTableScreenState extends State<DataTableScreen> {
       default:
         return null;
     }
+  }
+
+  /// LR처럼 문자열인 필드의 표시값 반환
+  String? _getStringFieldValue(StationData station, String fieldName) {
+    if (fieldName == 'lr') return station.lr;
+    return null;
   }
 
   void _showColumnSelector() {

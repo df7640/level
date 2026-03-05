@@ -1,12 +1,14 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/dimension_data.dart';
 import '../models/station_data.dart';
 import '../services/bluetooth_gnss_service.dart';
 import '../services/dxf_service.dart';
+import '../services/ntrip_service.dart';
 import '../services/snap_service.dart';
+import '../services/stakeout_beep_service.dart';
 import '../widgets/dxf_painter.dart';
 import '../widgets/dimension_painter.dart';
 import '../widgets/gps_position_painter.dart';
@@ -79,7 +81,17 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
   // GPS
   final BluetoothGnssService _gnssService = BluetoothGnssService();
-  bool _showGpsOverlay = false; // GPS 상태 오버레이
+  bool _gpsAutoCenter = true; // GPS 자동 중앙 정렬
+  Timer? _gpsCenterTimer; // 5초 주기 자동 정렬 타이머
+  GnssConnectionState? _prevGnssState; // 연결 상태 변화 감지용
+
+  // NTRIP
+  final NtripService _ntripService = NtripService();
+
+  // 측설 모드
+  ({double dxfX, double dxfY, String name})? _stakeoutTarget; // 측설 대상 포인트
+  final StakeoutBeepService _beepService = StakeoutBeepService();
+  double _antennaHeight = 1.8000; // 안테나 높이 (m)
 
   /// 좌표가 있는 측점만 필터
   List<StationData> get _stationsWithCoords =>
@@ -99,24 +111,199 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     super.initState();
     _loadSampleDxf();
     _gnssService.addListener(_onGnssUpdate);
+    _ntripService.addListener(_onNtripUpdate);
+    _ntripService.loadConfig();
+    // NTRIP RTCM → 블루투스 수신기로 전달
+    _ntripService.onRtcmData = (data) {
+      _gnssService.sendRtcm(data);
+    };
   }
 
   @override
   void dispose() {
+    _gpsCenterTimer?.cancel();
+    _beepService.dispose();
     _gnssService.removeListener(_onGnssUpdate);
     _gnssService.dispose();
+    _ntripService.removeListener(_onNtripUpdate);
+    _ntripService.dispose();
     super.dispose();
   }
 
+  // Fix 상태 변화 감지용
+  int _prevFixQuality = -1;
+
   void _onGnssUpdate() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+
+    // GPS 연결 상태 변화 감지
+    final currentState = _gnssService.connectionState;
+    if (_prevGnssState != currentState) {
+      if (currentState == GnssConnectionState.connected) {
+        _gpsAutoCenter = true;
+        _startGpsCenterTimer();
+        _showStatusMessage('서버에 연결되었습니다', Colors.green);
+      } else if (currentState == GnssConnectionState.disconnected) {
+        _stopGpsCenterTimer();
+        _exitStakeout();
+        _showStatusMessage('연결이 해제되었습니다', Colors.red);
+      } else if (currentState == GnssConnectionState.error) {
+        _showStatusMessage('연결 오류 발생', Colors.red);
+      }
+      _prevGnssState = currentState;
+    }
+
+    // Fix 품질 변화 감지 → 메시지 표시
+    final currentFix = _gnssService.fixQuality;
+    if (currentFix != _prevFixQuality && currentState == GnssConnectionState.connected) {
+      if (currentFix == 4 && _prevFixQuality != 4) {
+        _showStatusMessage('RTK 픽스되었습니다!', Colors.greenAccent);
+      } else if (currentFix == 5 && _prevFixQuality != 5) {
+        _showStatusMessage('보정신호 수신중입니다 (Float)', Colors.yellow);
+      } else if (currentFix == 2 && _prevFixQuality != 2) {
+        _showStatusMessage('DGPS 보정 수신중', Colors.orange);
+      } else if (currentFix == 1 && _prevFixQuality < 1) {
+        _showStatusMessage('GPS 단독측위', Colors.orange);
+      } else if (currentFix == 0 && _prevFixQuality > 0) {
+        _showStatusMessage('위성 탐색중...', Colors.red);
+      }
+      _prevFixQuality = currentFix;
+    }
+
+    // NTRIP에 GGA 전송 (VRS 보정 기준점)
+    if (_ntripService.isConnected && _gnssService.lastGga != null) {
+      _ntripService.updateGga(_gnssService.lastGga!);
+    }
+
+    // 측설 거리/비프 업데이트 (매 NMEA 업데이트마다)
+    if (_stakeoutTarget != null && _gnssService.position != null) {
+      final pos = _gnssService.position!;
+      final dx = _stakeoutTarget!.dxfX - pos.tmX;
+      final dy = _stakeoutTarget!.dxfY - pos.tmY;
+      final distance = sqrt(dx * dx + dy * dy);
+      _beepService.updateForDistance(distance);
+    }
+
+    setState(() {});
+  }
+
+  void _onNtripUpdate() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  /// 상태 메시지 스낵바 (눈에 잘 보이게)
+  void _showStatusMessage(String message, Color color) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).removeCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.info_outline, color: Colors.black, size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: color,
+        duration: const Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
+
+  /// GPS 자동 중앙 정렬 타이머 시작 (5초 주기)
+  void _startGpsCenterTimer() {
+    _gpsCenterTimer?.cancel();
+    // 첫 위치 즉시 정렬
+    if (_gnssService.position != null) {
+      _centerOnGpsPosition();
+    }
+    _gpsCenterTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (_gpsAutoCenter && _gnssService.position != null && mounted) {
+        _centerOnGpsPosition();
+      }
+    });
+  }
+
+  void _stopGpsCenterTimer() {
+    _gpsCenterTimer?.cancel();
+    _gpsCenterTimer = null;
+  }
+
+  /// GPS 현재 위치로 화면 중앙 이동
+  void _centerOnGpsPosition() {
+    final pos = _gnssService.position;
+    if (pos == null || _dxfData == null || _lastCanvasSize == null) return;
+
+    double targetZoom = _zoom;
+
+    // 측설 활성 시 거리 기반 자동 줌 (테라에스 스타일)
+    // 1m 이내: 급격히 확대, cm 단위: 극도로 확대
+    if (_stakeoutTarget != null) {
+      final dx = _stakeoutTarget!.dxfX - pos.tmX;
+      final dy = _stakeoutTarget!.dxfY - pos.tmY;
+      final distance = sqrt(dx * dx + dy * dy);
+      targetZoom = (100.0 / (distance + 0.05)).clamp(5.0, 800.0);
+    }
+
+    _centerOnDxfPoint(pos.tmX, pos.tmY, targetZoom: targetZoom);
+  }
+
+  /// DXF 좌표를 화면 중앙에 배치
+  void _centerOnDxfPoint(double dxfX, double dxfY, {double? targetZoom}) {
+    if (_dxfData == null || _lastCanvasSize == null) return;
+    final canvasSize = _lastCanvasSize!;
+    final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
+    final minX = bounds['minX'] as double;
+    final minY = bounds['minY'] as double;
+    final maxX = bounds['maxX'] as double;
+    final maxY = bounds['maxY'] as double;
+    final dxfWidth = maxX - minX;
+    final dxfHeight = maxY - minY;
+    if (dxfWidth <= 0 || dxfHeight <= 0) return;
+
+    final sX = canvasSize.width * 0.9 / dxfWidth;
+    final sY = canvasSize.height * 0.9 / dxfHeight;
+    final baseScale = sX < sY ? sX : sY;
+
+    final zoom = targetZoom ?? _zoom;
+    final scale = baseScale * zoom;
+    final centerOffsetX = (canvasSize.width - dxfWidth * scale) / 2;
+    final centerOffsetY = (canvasSize.height - dxfHeight * scale) / 2;
+    final screenCenterX = canvasSize.width / 2;
+    final screenCenterY = canvasSize.height / 2;
+    final newOffsetDx = screenCenterX - (dxfX - minX) * scale - centerOffsetX;
+    final newOffsetDy = canvasSize.height - screenCenterY - (dxfY - minY) * scale - centerOffsetY;
+
+    setState(() {
+      if (targetZoom != null) _zoom = targetZoom;
+      _offset = Offset(newOffsetDx, newOffsetDy);
+    });
+  }
+
+  /// 측설 모드 종료
+  void _exitStakeout() {
+    _stakeoutTarget = null;
+    _beepService.stop();
   }
 
   /// GPS 아이콘 색상
   Color _getGpsIconColor() {
     switch (_gnssService.connectionState) {
       case GnssConnectionState.connected:
-        final fix = _gnssService.position?.fixQuality ?? 0;
+        final fix = _gnssService.fixQuality;
         if (fix == 4) return Colors.green;
         if (fix == 5) return Colors.yellow;
         if (fix >= 1) return Colors.orange;
@@ -132,37 +319,424 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
   /// GPS Fix 상태 텍스트
   String _getFixStatusText() {
-    final fix = _gnssService.position?.fixQuality ?? 0;
+    final fix = _gnssService.fixQuality;
     switch (fix) {
-      case 4: return 'RTK 고정';
-      case 5: return '보정신호 수신중...';
+      case 4: return 'RTK 픽스';
+      case 5: return 'Float (보정신호 수신중)';
       case 2: return 'DGPS';
       case 1: return '단독측위';
       default: return '위성 탐색중...';
     }
   }
 
-  /// GPS 토글 (연결/해제)
-  void _toggleGps() async {
-    if (_gnssService.connectionState == GnssConnectionState.connected ||
-        _gnssService.connectionState == GnssConnectionState.connecting) {
-      _gnssService.disconnect();
-    } else {
-      // Android 12+ 블루투스 런타임 권한 요청
-      final btConnect = await Permission.bluetoothConnect.request();
-      final btScan = await Permission.bluetoothScan.request();
-      final location = await Permission.locationWhenInUse.request();
+  /// GPS 메뉴 (연결/해제/NTRIP 설정)
+  void _showGpsMenu() {
+    final isConnected = _gnssService.connectionState == GnssConnectionState.connected;
+    final isConnecting = _gnssService.connectionState == GnssConnectionState.connecting;
 
-      if (btConnect.isGranted && btScan.isGranted && location.isGranted) {
-        _showBluetoothDeviceDialog();
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('블루투스 및 위치 권한이 필요합니다. 설정에서 허용해주세요.')),
-          );
-        }
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.grey[900],
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text(
+                  'GPS / NTRIP 설정',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              // GPS 연결
+              if (!isConnected && !isConnecting)
+                ListTile(
+                  leading: const Icon(Icons.bluetooth_searching, color: Colors.blue),
+                  title: const Text('GPS 연결', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('블루투스 GNSS 수신기에 연결', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _connectGps();
+                  },
+                ),
+              // GPS 연결 끊기
+              if (isConnected || isConnecting)
+                ListTile(
+                  leading: const Icon(Icons.bluetooth_disabled, color: Colors.red),
+                  title: Text(
+                    'GPS 연결 끊기${_gnssService.deviceName != null ? " (${_gnssService.deviceName})" : ""}',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _gnssService.disconnect();
+                    _ntripService.disconnect();
+                    _showStatusMessage('GPS 연결이 해제되었습니다', Colors.red);
+                  },
+                ),
+              const Divider(color: Colors.white24),
+              // NTRIP 연결
+              ListTile(
+                leading: Icon(
+                  Icons.cell_tower,
+                  color: _ntripService.isConnected ? Colors.greenAccent : Colors.orange,
+                ),
+                title: Text(
+                  _ntripService.isConnected ? 'NTRIP 연결됨' : 'NTRIP 설정',
+                  style: const TextStyle(color: Colors.white),
+                ),
+                subtitle: Text(
+                  _ntripService.isConnected
+                      ? '${_ntripService.config?.host ?? ""}/${_ntripService.config?.mountPoint ?? ""} - ${(_ntripService.bytesReceived / 1024).toStringAsFixed(1)} KB 수신'
+                      : 'RTK 보정 데이터 수신 설정',
+                  style: const TextStyle(color: Colors.white38, fontSize: 12),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showNtripSettingsDialog();
+                },
+              ),
+              // NTRIP 연결 끊기
+              if (_ntripService.isConnected)
+                ListTile(
+                  leading: const Icon(Icons.cell_tower, color: Colors.red),
+                  title: const Text('NTRIP 연결 끊기', style: TextStyle(color: Colors.white)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _ntripService.disconnect();
+                    _showStatusMessage('NTRIP 연결이 해제되었습니다', Colors.orange);
+                  },
+                ),
+              // NTRIP 디버그 로그
+              if (_ntripService.debugLog.isNotEmpty)
+                ListTile(
+                  leading: const Icon(Icons.bug_report, color: Colors.white54),
+                  title: const Text('NTRIP 연결 로그', style: TextStyle(color: Colors.white)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showNtripLogDialog();
+                  },
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// GPS 블루투스 연결
+  void _connectGps() async {
+    final btConnect = await Permission.bluetoothConnect.request();
+    final btScan = await Permission.bluetoothScan.request();
+    final location = await Permission.locationWhenInUse.request();
+
+    if (btConnect.isGranted && btScan.isGranted && location.isGranted) {
+      _showBluetoothDeviceDialog();
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('블루투스 및 위치 권한이 필요합니다. 설정에서 허용해주세요.')),
+        );
       }
     }
+  }
+
+  /// NTRIP 설정 다이얼로그
+  void _showNtripSettingsDialog() async {
+    final config = _ntripService.config;
+    final hostCtrl = TextEditingController(text: config?.host ?? 'gnss.ngii.go.kr');
+    final portCtrl = TextEditingController(text: (config?.port ?? 2101).toString());
+    final mountCtrl = TextEditingController(text: config?.mountPoint ?? 'VRS-RTCM31');
+    final userCtrl = TextEditingController(text: config?.username ?? '');
+    final passCtrl = TextEditingController(text: config?.password ?? 'ngii');
+
+    // 마운트포인트 목록
+    List<String>? mountPoints;
+    bool loadingMounts = false;
+    bool passVisible = false;
+
+    if (!mounted) return;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              backgroundColor: Colors.grey[850],
+              title: const Text('NTRIP 설정', style: TextStyle(color: Colors.white)),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: hostCtrl,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(
+                        labelText: '서버 주소',
+                        labelStyle: TextStyle(color: Colors.white54),
+                        hintText: 'gnss.ngii.go.kr',
+                        hintStyle: TextStyle(color: Colors.white24),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: portCtrl,
+                      style: const TextStyle(color: Colors.white),
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: '포트',
+                        labelStyle: TextStyle(color: Colors.white54),
+                        hintText: '2101',
+                        hintStyle: TextStyle(color: Colors.white24),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: mountCtrl,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              labelText: '마운트포인트',
+                              labelStyle: TextStyle(color: Colors.white54),
+                              hintText: '소스테이블에서 선택',
+                              hintStyle: TextStyle(color: Colors.white24),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        loadingMounts
+                            ? const SizedBox(
+                                width: 24, height: 24,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : IconButton(
+                                icon: const Icon(Icons.download, color: Colors.cyanAccent),
+                                tooltip: '마운트포인트 목록 가져오기',
+                                onPressed: () async {
+                                  setDialogState(() => loadingMounts = true);
+                                  final tempConfig = NtripConfig(
+                                    host: hostCtrl.text.trim(),
+                                    port: int.tryParse(portCtrl.text) ?? 2101,
+                                    mountPoint: '',
+                                    username: userCtrl.text.trim(),
+                                    password: passCtrl.text.trim(),
+                                  );
+                                  final mounts = await _ntripService.getSourceTable(tempConfig: tempConfig);
+                                  setDialogState(() {
+                                    mountPoints = mounts;
+                                    loadingMounts = false;
+                                  });
+                                },
+                              ),
+                      ],
+                    ),
+                    // 마운트포인트 목록
+                    if (mountPoints != null && mountPoints!.isNotEmpty)
+                      Container(
+                        margin: const EdgeInsets.only(top: 8),
+                        constraints: const BoxConstraints(maxHeight: 100),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.white24),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: mountPoints!.length,
+                          itemBuilder: (_, i) {
+                            final mp = mountPoints![i];
+                            final isSelected = mountCtrl.text == mp;
+                            return ListTile(
+                              dense: true,
+                              title: Text(
+                                mp,
+                                style: TextStyle(
+                                  color: isSelected ? Colors.cyanAccent : Colors.white,
+                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                ),
+                              ),
+                              onTap: () {
+                                mountCtrl.text = mp;
+                                setDialogState(() {});
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    if (mountPoints != null && mountPoints!.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8),
+                        child: Text('마운트포인트를 찾을 수 없습니다', style: TextStyle(color: Colors.red, fontSize: 12)),
+                      ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: userCtrl,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(
+                        labelText: '아이디',
+                        labelStyle: TextStyle(color: Colors.white54),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: passCtrl,
+                      style: const TextStyle(color: Colors.white),
+                      obscureText: !passVisible,
+                      decoration: InputDecoration(
+                        labelText: '비밀번호',
+                        labelStyle: const TextStyle(color: Colors.white54),
+                        hintText: '국토지리정보원: ngii',
+                        hintStyle: const TextStyle(color: Colors.white24),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            passVisible ? Icons.visibility_off : Icons.visibility,
+                            color: Colors.white38,
+                          ),
+                          onPressed: () => setDialogState(() => passVisible = !passVisible),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('취소', style: TextStyle(color: Colors.white54)),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final newConfig = NtripConfig(
+                      host: hostCtrl.text.trim(),
+                      port: int.tryParse(portCtrl.text) ?? 2101,
+                      mountPoint: mountCtrl.text.trim(),
+                      username: userCtrl.text.trim(),
+                      password: passCtrl.text.trim(),
+                    );
+                    newConfig.save();
+                    Navigator.pop(ctx);
+                    _showStatusMessage('설정이 저장되었습니다', Colors.blue);
+                  },
+                  child: const Text('저장', style: TextStyle(color: Colors.cyanAccent)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                  onPressed: () {
+                    final newConfig = NtripConfig(
+                      host: hostCtrl.text.trim(),
+                      port: int.tryParse(portCtrl.text) ?? 2101,
+                      mountPoint: mountCtrl.text.trim(),
+                      username: userCtrl.text.trim(),
+                      password: passCtrl.text.trim(),
+                    );
+                    Navigator.pop(ctx);
+                    _ntripService.connect(newConfig);
+                    _showStatusMessage('NTRIP 연결 시도중...', Colors.cyanAccent);
+                  },
+                  child: const Text('연결'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    hostCtrl.dispose();
+    portCtrl.dispose();
+    mountCtrl.dispose();
+    userCtrl.dispose();
+    passCtrl.dispose();
+  }
+
+  /// NTRIP 디버그 로그 다이얼로그
+  void _showNtripLogDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            // 1초마다 갱신
+            final timer = Stream.periodic(const Duration(seconds: 1));
+            timer.take(60).listen((_) {
+              if (ctx.mounted) setDialogState(() {});
+            });
+
+            final logs = _ntripService.debugLog;
+            return AlertDialog(
+              backgroundColor: Colors.grey[900],
+              title: Row(
+                children: [
+                  Icon(
+                    Icons.circle,
+                    size: 12,
+                    color: _ntripService.isConnected ? Colors.greenAccent : Colors.orange,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'NTRIP 연결 로그  (${(_ntripService.bytesReceived / 1024).toStringAsFixed(1)}KB 수신)',
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: double.maxFinite,
+                height: 400,
+                child: logs.isEmpty
+                    ? const Center(
+                        child: Text('로그 없음', style: TextStyle(color: Colors.white38)),
+                      )
+                    : ListView.builder(
+                        itemCount: logs.length,
+                        itemBuilder: (_, i) {
+                          final line = logs[i];
+                          Color color = Colors.white70;
+                          if (line.contains('✅')) color = Colors.greenAccent;
+                          if (line.contains('❌')) color = Colors.redAccent;
+                          if (line.contains('GGA')) color = Colors.cyanAccent;
+                          if (line.contains('RTCM')) color = Colors.yellowAccent;
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 1),
+                            child: Text(
+                              line,
+                              style: TextStyle(
+                                color: color,
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    _ntripService.debugLog.clear();
+                    setDialogState(() {});
+                  },
+                  child: const Text('로그 지우기', style: TextStyle(color: Colors.white38)),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('닫기', style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   /// 페어링된 블루투스 기기 선택 다이얼로그
@@ -226,66 +800,6 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     );
   }
 
-  /// GPS 현재 위치로 이동 (롱프레스)
-  void _goToGpsPosition() {
-    final pos = _gnssService.position;
-    if (pos == null || _dxfData == null || _lastCanvasSize == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('GPS 위치 없음: pos=${pos != null}, dxf=${_dxfData != null}, canvas=${_lastCanvasSize != null}')),
-        );
-      }
-      return;
-    }
-
-    // 디버그: GPS TM 좌표와 도면 범위 비교
-    final debugBounds = _dxfData!['bounds'] as Map<String, dynamic>;
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'GPS TM: (${pos.tmX.toStringAsFixed(1)}, ${pos.tmY.toStringAsFixed(1)})\n'
-            'DXF: X(${(debugBounds["minX"] as double).toStringAsFixed(1)}~${(debugBounds["maxX"] as double).toStringAsFixed(1)}) '
-            'Y(${(debugBounds["minY"] as double).toStringAsFixed(1)}~${(debugBounds["maxY"] as double).toStringAsFixed(1)})',
-          ),
-          duration: const Duration(seconds: 5),
-        ),
-      );
-    }
-
-    final canvasSize = _lastCanvasSize!;
-    final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
-    final minX = bounds['minX'] as double;
-    final minY = bounds['minY'] as double;
-    final maxX = bounds['maxX'] as double;
-    final maxY = bounds['maxY'] as double;
-    final dxfWidth = maxX - minX;
-    final dxfHeight = maxY - minY;
-    if (dxfWidth <= 0 || dxfHeight <= 0) return;
-
-    final scaleX = canvasSize.width * 0.9 / dxfWidth;
-    final scaleY = canvasSize.height * 0.9 / dxfHeight;
-    final baseScale = scaleX < scaleY ? scaleX : scaleY;
-
-    // 적절한 줌 레벨로 설정
-    const targetZoom = 8.0;
-    final scale = baseScale * targetZoom;
-    final centerOffsetX = (canvasSize.width - dxfWidth * scale) / 2;
-    final centerOffsetY = (canvasSize.height - dxfHeight * scale) / 2;
-
-    // GPS TM 좌표가 화면 중앙에 오도록 오프셋 계산
-    final screenX = (pos.tmX - minX) * scale + centerOffsetX;
-    final screenY = canvasSize.height - ((pos.tmY - minY) * scale + centerOffsetY);
-
-    setState(() {
-      _zoom = targetZoom;
-      _offset = Offset(
-        canvasSize.width / 2 - screenX,
-        -(screenY - canvasSize.height / 2),
-      );
-    });
-
-  }
 
   /// 영역 확대 적용
   /// 드래그 사각형의 중심을 DXF 좌표로 역변환 → 새 줌에서 그 DXF 좌표가 화면 중앙에 오도록 오프셋 계산
@@ -955,18 +1469,34 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       appBar: AppBar(
         title: const Text('DXF 도면'),
         actions: [
-          // GPS 연결 버튼
-          GestureDetector(
-            onLongPress: _goToGpsPosition,
-            child: IconButton(
-              icon: Icon(
-                _gnssService.connectionState == GnssConnectionState.connected
-                    ? Icons.gps_fixed
-                    : Icons.gps_off,
-                color: _getGpsIconColor(),
+          // GPS / NTRIP 메뉴 버튼
+          Stack(
+            alignment: Alignment.center,
+            children: [
+              IconButton(
+                icon: Icon(
+                  _gnssService.connectionState == GnssConnectionState.connected
+                      ? Icons.gps_fixed
+                      : Icons.gps_off,
+                  color: _getGpsIconColor(),
+                ),
+                onPressed: _showGpsMenu,
               ),
-              onPressed: _toggleGps,
-            ),
+              // NTRIP 연결됨 표시 (GPS 아이콘 우측 상단에 녹색 점)
+              if (_ntripService.isConnected)
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: Container(
+                    width: 8,
+                    height: 8,
+                    decoration: const BoxDecoration(
+                      color: Colors.greenAccent,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+            ],
           ),
           IconButton(
             icon: Icon(
@@ -1010,25 +1540,70 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                 )
               : const Center(child: Text('DXF 파일을 불러올 수 없습니다')),
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-      floatingActionButton: _dxfData != null && !_isDimensionMode
+      floatingActionButton: _dxfData != null
           ? Padding(
               padding: const EdgeInsets.only(bottom: 80),
-              child: FloatingActionButton(
-                onPressed: () {
-                  setState(() {
-                    _isPointMode = !_isPointMode;
-                    if (!_isPointMode) {
-                      _touchPoint = null;
-                      _activeSnap = null;
-                      _highlightEntity = null;
-                    }
-                  });
-                },
-                backgroundColor: _isPointMode ? Colors.cyan : Colors.grey[800],
-                child: Icon(
-                  Icons.control_point,
-                  color: _isPointMode ? Colors.black : Colors.white70,
-                ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // GPS 자동 중앙 정렬 토글 (GPS 연결 시만 표시)
+                  if (_gnssService.connectionState == GnssConnectionState.connected)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: FloatingActionButton.small(
+                        heroTag: 'gpsAutoCenter',
+                        onPressed: () {
+                          setState(() {
+                            _gpsAutoCenter = !_gpsAutoCenter;
+                            if (_gpsAutoCenter) {
+                              _startGpsCenterTimer();
+                            } else {
+                              _stopGpsCenterTimer();
+                            }
+                          });
+                        },
+                        backgroundColor: _gpsAutoCenter ? Colors.green : Colors.grey[700],
+                        child: Icon(
+                          _gpsAutoCenter ? Icons.my_location : Icons.location_disabled,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                      ),
+                    ),
+                  // 측설 종료 버튼 (측설 활성 시만 표시)
+                  if (_stakeoutTarget != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: FloatingActionButton.small(
+                        heroTag: 'stakeoutExit',
+                        onPressed: () {
+                          setState(() => _exitStakeout());
+                        },
+                        backgroundColor: Colors.red[700],
+                        child: const Icon(Icons.close, color: Colors.white, size: 20),
+                      ),
+                    ),
+                  // 포인트 지정 버튼 (치수 모드 아닐 때)
+                  if (!_isDimensionMode)
+                    FloatingActionButton(
+                      heroTag: 'pointMode',
+                      onPressed: () {
+                        setState(() {
+                          _isPointMode = !_isPointMode;
+                          if (!_isPointMode) {
+                            _touchPoint = null;
+                            _activeSnap = null;
+                            _highlightEntity = null;
+                          }
+                        });
+                      },
+                      backgroundColor: _isPointMode ? Colors.cyan : Colors.grey[800],
+                      child: Icon(
+                        Icons.control_point,
+                        color: _isPointMode ? Colors.black : Colors.white70,
+                      ),
+                    ),
+                ],
               ),
             )
           : null,
@@ -1458,7 +2033,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                     _cursorTipDxf = null;
                   });
                 } else if (_isPointMode) {
-                  // 포인트 모드: 스냅 성공이든 취소든 모드 비활성
+                  // 포인트 모드: 스냅 성공 시 포인트 확정 + 측설 진입
                   setState(() {
                     if (_activeSnap != null) {
                       _confirmedPoints.add((
@@ -1466,6 +2041,12 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         dxfX: _activeSnap!.dxfX,
                         dxfY: _activeSnap!.dxfY,
                       ));
+                      // GPS 연결 중이면 측설 모드 진입
+                      if (_gnssService.connectionState == GnssConnectionState.connected) {
+                        final snapName = _activeSnap!.entity['text'] as String? ??
+                            'P${_confirmedPoints.length}';
+                        _stakeoutTarget = (dxfX: _activeSnap!.dxfX, dxfY: _activeSnap!.dxfY, name: snapName);
+                      }
                     }
                     _isPointMode = false;
                     _touchPoint = null;
@@ -1512,7 +2093,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         transformPoint: _getTransformPoint(canvasSize),
                       ),
                     ),
-                  // GPS 위치 마커
+                  // GPS 위치 마커 + 측설 타겟
                   if (_gnssService.position != null && _getTransformPoint(canvasSize) != null)
                     CustomPaint(
                       size: Size.infinite,
@@ -1521,6 +2102,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         tmY: _gnssService.position!.tmY,
                         fixQuality: _gnssService.position!.fixQuality,
                         transformPoint: _getTransformPoint(canvasSize)!,
+                        targetDxfX: _stakeoutTarget?.dxfX,
+                        targetDxfY: _stakeoutTarget?.dxfY,
                       ),
                     ),
                   // 치수 측정 결과 (치수선 + 거리 + 보조선)
@@ -1592,7 +2175,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                                 ? '연결 중...'
                                 : _gnssService.connectionState == GnssConnectionState.error
                                     ? '연결 오류'
-                                    : '${_getFixStatusText()}  위성 ${_gnssService.position?.satellites ?? 0}',
+                                    : '${_getFixStatusText()}  위성 ${_gnssService.satellites}',
                             style: TextStyle(
                               color: _getGpsIconColor(),
                               fontSize: 12,
@@ -1622,9 +2205,51 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                             style: const TextStyle(color: Colors.white70, fontSize: 12),
                           ),
                       ],
+                      // NTRIP 상태
+                      if (_ntripService.isConnected || _ntripService.state == NtripState.connecting || _ntripService.state == NtripState.error) ...[
+                        const SizedBox(height: 4),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.cell_tower,
+                              size: 10,
+                              color: _ntripService.isConnected ? Colors.greenAccent : Colors.orange,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              _ntripService.state == NtripState.connecting
+                                  ? 'NTRIP 연결중...'
+                                  : _ntripService.state == NtripState.error
+                                      ? 'NTRIP 오류'
+                                      : 'NTRIP  ${(_ntripService.bytesReceived / 1024).toStringAsFixed(1)}KB',
+                              style: TextStyle(
+                                color: _ntripService.isConnected ? Colors.greenAccent : Colors.orange,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),
+              ),
+            // 측설 상단 HUD (안테나높이, 포인트명, 거리, 방향)
+            if (_stakeoutTarget != null && _gnssService.position != null)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: _buildStakeoutTopPanel(),
+              ),
+            // 측설 하단 HUD (좌표, 높이, PDOP, 시간지연, 거리)
+            if (_stakeoutTarget != null && _gnssService.position != null)
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: _buildStakeoutBottomPanel(),
               ),
             // 포인트/치수 모드 안내 표시
             if (_isPointMode || _isDimensionMode)
@@ -1709,6 +2334,144 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     }
     if (_dimFirstPoint == null) return '$typeName - 첫번째 점을 터치하세요';
     return '$typeName - 두번째 점을 터치하세요';
+  }
+
+  /// 측설 상단 HUD — 안테나높이, 포인트명, 거리, N/S E/W 방향
+  Widget _buildStakeoutTopPanel() {
+    final pos = _gnssService.position!;
+    final target = _stakeoutTarget!;
+    final dE = target.dxfX - pos.tmX;
+    final dN = target.dxfY - pos.tmY;
+    final distance = sqrt(dE * dE + dN * dN);
+
+    // 두 방향 성분 (타겟까지 남은 거리의 N/S, E/W)
+    final nsLabel = dN >= 0 ? '북(N)' : '남(S)';
+    final ewLabel = dE >= 0 ? '동(E)' : '서(W)';
+
+    return SafeArea(
+      bottom: false,
+      child: Container(
+        color: Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 1줄: 안테나높이 + 포인트명
+            Row(
+              children: [
+                Text(
+                  '안테나높이 ${_antennaHeight.toStringAsFixed(4)}M',
+                  style: const TextStyle(
+                    color: Colors.black, fontSize: 14, fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  target.name,
+                  style: const TextStyle(
+                    color: Colors.black, fontSize: 14, fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 2),
+            // 2줄: 거리 + 방향 성분 2개
+            Row(
+              children: [
+                Text(
+                  '거리 ${distance.toStringAsFixed(4)}',
+                  style: const TextStyle(
+                    color: Colors.black, fontSize: 14, fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Text(
+                  '$nsLabel ${dN.abs().toStringAsFixed(4)}',
+                  style: const TextStyle(
+                    color: Colors.black, fontSize: 14, fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Text(
+                  '$ewLabel ${dE.abs().toStringAsFixed(4)}',
+                  style: const TextStyle(
+                    color: Colors.black, fontSize: 14, fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 측설 하단 HUD — GPS 좌표, 높이, PDOP, 시간지연, 거리
+  Widget _buildStakeoutBottomPanel() {
+    final pos = _gnssService.position!;
+    final target = _stakeoutTarget!;
+    final dE = target.dxfX - pos.tmX;
+    final dN = target.dxfY - pos.tmY;
+    final distance = sqrt(dE * dE + dN * dN);
+
+    // 현재 GPS TM 좌표 (Northing, Easting)
+    final northing = pos.tmY;
+    final easting = pos.tmX;
+    final altitude = pos.altitude ?? 0.0;
+    final pdop = _gnssService.pdop ?? 0.0;
+    final diffAge = pos.diffAge ?? 0.0;
+
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 1줄: N(북) 좌표, E(동) 좌표
+            Row(
+              children: [
+                Text(
+                  '북(N) ${northing.toStringAsFixed(4)}',
+                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  '동(E) ${easting.toStringAsFixed(4)}',
+                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                ),
+              ],
+            ),
+            const SizedBox(height: 2),
+            // 2줄: 높이, PDOP, 시간지연, 거리
+            Row(
+              children: [
+                Text(
+                  '높이 ${altitude.toStringAsFixed(4)}',
+                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'PDOP ${pdop.toStringAsFixed(3)}',
+                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '시간지연 ${diffAge.toStringAsFixed(1)}',
+                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '거리 ${distance.toStringAsFixed(4)}',
+                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// 레이어 제어 패널 (하단에서 올라오는 패널)

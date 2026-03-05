@@ -17,7 +17,7 @@ class DatabaseService {
 
   static Database? _database;
   static const String _databaseName = 'longitudinal_viewer.db';
-  static const int _databaseVersion = 8;
+  static const int _databaseVersion = 9;
 
   // 테이블 이름
   static const String tableProjects = 'projects';
@@ -82,6 +82,14 @@ class DatabaseService {
         planned_bank_right REAL,
         roadbed_left REAL,
         roadbed_right REAL,
+        foundation_excavation REAL,
+        offset_left REAL,
+        offset_right REAL,
+        lr TEXT,
+        height REAL,
+        single_count REAL,
+        slope REAL,
+        angle REAL,
         gh_d REAL,
         gh1 REAL,
         gh2 REAL,
@@ -302,6 +310,28 @@ class DatabaseService {
       await db.execute(
           'CREATE INDEX IF NOT EXISTS idx_foundation_project_id ON $tableFoundationResults(project_id)');
     }
+
+    if (oldVersion < 9) {
+      // 기초터파기, 옵셋좌/우, LR, Height, 단수, 기울기, 각도 컬럼 추가
+      final newCols = [
+        'foundation_excavation REAL',
+        'offset_left REAL',
+        'offset_right REAL',
+        'lr TEXT',
+        'height REAL',
+        'single_count REAL',
+        'slope REAL',
+        'angle REAL',
+      ];
+      for (final col in newCols) {
+        try {
+          await db.execute('ALTER TABLE $tableStations ADD COLUMN $col');
+        } catch (_) {}
+      }
+      // 기존 데이터 초기화 → 앱 시작 시 CSV에서 새로 로드
+      await db.delete(tableStations);
+      await db.delete(tableProjects);
+    }
   }
 
   // ==================== 프로젝트 관리 ====================
@@ -498,6 +528,14 @@ class DatabaseService {
       'planned_bank_right': station.plannedBankRight,
       'roadbed_left': station.roadbedLeft,
       'roadbed_right': station.roadbedRight,
+      'foundation_excavation': station.foundationExcavation,
+      'offset_left': station.offsetLeft,
+      'offset_right': station.offsetRight,
+      'lr': station.lr,
+      'height': station.height,
+      'single_count': station.singleCount,
+      'slope': station.slope,
+      'angle': station.angle,
       'gh_d': station.ghD,
       'gh1': station.gh1,
       'gh2': station.gh2,
@@ -532,6 +570,14 @@ class DatabaseService {
       plannedBankRight: row['planned_bank_right'] as double?,
       roadbedLeft: row['roadbed_left'] as double?,
       roadbedRight: row['roadbed_right'] as double?,
+      foundationExcavation: row['foundation_excavation'] as double?,
+      offsetLeft: row['offset_left'] as double?,
+      offsetRight: row['offset_right'] as double?,
+      lr: row['lr'] as String?,
+      height: row['height'] as double?,
+      singleCount: row['single_count'] as double?,
+      slope: row['slope'] as double?,
+      angle: row['angle'] as double?,
       ghD: row['gh_d'] as double?,
       gh1: row['gh1'] as double?,
       gh2: row['gh2'] as double?,

@@ -22,6 +22,8 @@ class GnssPosition {
   final int fixQuality;
   final int satellites;
   final DateTime? utcTime;
+  final double? hdop;
+  final double? diffAge;  // 차분 보정 나이 (초)
 
   const GnssPosition({
     required this.tmX,
@@ -32,6 +34,8 @@ class GnssPosition {
     this.fixQuality = 0,
     this.satellites = 0,
     this.utcTime,
+    this.hdop,
+    this.diffAge,
   });
 
   String get fixLabel {
@@ -55,9 +59,21 @@ class BluetoothGnssService extends ChangeNotifier {
   final NmeaParser _parser = NmeaParser();
   String _buffer = '';
 
+  // 위치 유무와 관계없이 항상 업데이트되는 상태값
+  int _satellites = 0;
+  int _fixQuality = 0;
+  double? _pdop;
+
+  // 마지막 GGA 문장 (NTRIP VRS용)
+  String? _lastGga;
+
   GnssConnectionState get connectionState => _connectionState;
   String? get deviceName => _deviceName;
   GnssPosition? get position => _position;
+  int get satellites => _satellites;
+  int get fixQuality => _fixQuality;
+  double? get pdop => _pdop;
+  String? get lastGga => _lastGga;
 
   /// 페어링된 블루투스 기기 목록
   Future<List<BluetoothDevice>> getPairedDevices() async {
@@ -106,17 +122,34 @@ class BluetoothGnssService extends ChangeNotifier {
     }
   }
 
-  /// NMEA 버퍼 처리
+  /// NMEA 버퍼 처리 — 매 BT 패킷마다 즉시 파싱 + notify
   void _processBuffer() {
-    while (_buffer.contains('\r\n')) {
-      final idx = _buffer.indexOf('\r\n');
+    bool changed = false;
+    while (_buffer.contains('\n')) {
+      final idx = _buffer.indexOf('\n');
       final sentence = _buffer.substring(0, idx).trim();
-      _buffer = _buffer.substring(idx + 2);
+      _buffer = _buffer.substring(idx + 1);
 
       if (!sentence.startsWith('\$')) continue;
 
+      // GGA 캡처 (NTRIP VRS용 + 디버그)
+      if (sentence.contains('GGA')) {
+        _lastGga = sentence;
+        debugPrint('[NMEA] $sentence');
+      }
+
       final nmeaPos = _parser.parse(sentence);
-      if (nmeaPos != null && nmeaPos.hasValidFix) {
+      // GSA 등은 null 반환하지만 PDOP를 업데이트할 수 있음
+      if (_parser.pdop != null) _pdop = _parser.pdop;
+      if (nmeaPos == null) continue;
+
+      // 위성수/Fix상태는 항상 업데이트 (fixQuality=0이어도)
+      _satellites = nmeaPos.satellites;
+      _fixQuality = nmeaPos.fixQuality;
+      changed = true;
+
+      // 좌표가 파싱되면 업데이트 (fixQuality=0이어도 좌표 자체는 유효할 수 있음)
+      if (nmeaPos.latitude != 0.0 && nmeaPos.longitude != 0.0) {
         final tm = CoordinateService.wgs84ToTm(
           nmeaPos.latitude,
           nmeaPos.longitude,
@@ -131,9 +164,21 @@ class BluetoothGnssService extends ChangeNotifier {
           fixQuality: nmeaPos.fixQuality,
           satellites: nmeaPos.satellites,
           utcTime: nmeaPos.utcTime,
+          hdop: nmeaPos.hdop,
+          diffAge: nmeaPos.diffAge,
         );
-        notifyListeners();
       }
+    }
+    if (changed) notifyListeners();
+  }
+
+  /// RTCM 보정 데이터를 수신기로 전송 (NTRIP → BT → i80)
+  void sendRtcm(Uint8List data) {
+    if (_connection == null || _connectionState != GnssConnectionState.connected) return;
+    try {
+      _connection!.output.add(data);
+    } catch (e) {
+      debugPrint('[GNSS] RTCM 전송 실패: $e');
     }
   }
 

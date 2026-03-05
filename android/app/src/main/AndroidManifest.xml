@@ -1,4 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 인터넷 (NTRIP RTK 보정 수신) -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- Bluetooth -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />

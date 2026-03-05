@@ -3,7 +3,7 @@
 class StationData {
   final String no; // 측점 번호 (예: "NO.1", "NO.1+5", "NO.1+10")
 
-  // CSV 원본 필드들
+  // CSV/Excel 원본 필드들
   final double? intervalDistance; // 점간거리
   final double? distance; // 누가거리
   final double? gh; // 지반고
@@ -12,10 +12,20 @@ class StationData {
   final double? plannedFloodLevel; // 계획홍수위
   final double? leftBankHeight; // 좌안제방고
   final double? rightBankHeight; // 우안제방고
-  final double? plannedBankLeft; // 계획제방고_좌안
-  final double? plannedBankRight; // 계획제방고_우안
-  final double? roadbedLeft; // 노체_좌안
-  final double? roadbedRight; // 노체_우안
+  final double? plannedBankLeft; // 계획제방고_좌(안)
+  final double? plannedBankRight; // 계획제방고_우(안)
+  final double? roadbedLeft; // 노체_좌(안)
+  final double? roadbedRight; // 노체_우(안)
+
+  // 추가 필드 (엑셀 신규 컬럼)
+  final double? foundationExcavation; // 기초터파기
+  final double? offsetLeft; // 옵셋좌
+  final double? offsetRight; // 옵셋우
+  final String? lr; // LR (좌안/우안 구분: "L", "R", "N" 등)
+  final double? height; // Height
+  final double? singleCount; // 단수
+  final double? slope; // 기울기
+  final double? angle; // 각도
 
   // 기존 필드들 (호환성 유지)
   final double? ghD; // GH-D
@@ -29,7 +39,7 @@ class StationData {
   final double? cutFill; // 절/성토 차이
   final String? cutFillStatus; // "CUT", "FILL", "ON_GRADE"
 
-  // 좌표 (DXF에서 선택한 경우)
+  // 좌표 (CSV 또는 DXF에서 선택)
   final double? x;
   final double? y;
 
@@ -52,6 +62,14 @@ class StationData {
     this.plannedBankRight,
     this.roadbedLeft,
     this.roadbedRight,
+    this.foundationExcavation,
+    this.offsetLeft,
+    this.offsetRight,
+    this.lr,
+    this.height,
+    this.singleCount,
+    this.slope,
+    this.angle,
     this.ghD,
     this.gh1,
     this.gh2,
@@ -70,20 +88,16 @@ class StationData {
   });
 
   /// 측점 번호에서 기본 번호와 플러스 거리 추출
-  /// 예: "NO.1+5" -> (1, 5)
   (int, int?) get stationParts {
     final match = RegExp(r'NO\.(\d+)(?:\+(\d+))?').firstMatch(no);
     if (match == null) return (0, null);
-
     final baseNo = int.parse(match.group(1)!);
     final plus = match.group(2) != null ? int.parse(match.group(2)!) : null;
     return (baseNo, plus);
   }
 
-  /// 기본 측점인지 확인 (플러스 체인이 없는 경우)
   bool get isBaseStation => !no.contains('+');
 
-  /// 복사본 생성 (일부 필드 변경)
   StationData copyWith({
     String? no,
     double? intervalDistance,
@@ -98,6 +112,14 @@ class StationData {
     double? plannedBankRight,
     double? roadbedLeft,
     double? roadbedRight,
+    double? foundationExcavation,
+    double? offsetLeft,
+    double? offsetRight,
+    String? lr,
+    double? height,
+    double? singleCount,
+    double? slope,
+    double? angle,
     double? ghD,
     double? gh1,
     double? gh2,
@@ -128,6 +150,14 @@ class StationData {
       plannedBankRight: plannedBankRight ?? this.plannedBankRight,
       roadbedLeft: roadbedLeft ?? this.roadbedLeft,
       roadbedRight: roadbedRight ?? this.roadbedRight,
+      foundationExcavation: foundationExcavation ?? this.foundationExcavation,
+      offsetLeft: offsetLeft ?? this.offsetLeft,
+      offsetRight: offsetRight ?? this.offsetRight,
+      lr: lr ?? this.lr,
+      height: height ?? this.height,
+      singleCount: singleCount ?? this.singleCount,
+      slope: slope ?? this.slope,
+      angle: angle ?? this.angle,
       ghD: ghD ?? this.ghD,
       gh1: gh1 ?? this.gh1,
       gh2: gh2 ?? this.gh2,
@@ -146,7 +176,6 @@ class StationData {
     );
   }
 
-  /// JSON으로 변환
   Map<String, dynamic> toJson() {
     return {
       'no': no,
@@ -162,6 +191,14 @@ class StationData {
       'planned_bank_right': plannedBankRight,
       'roadbed_left': roadbedLeft,
       'roadbed_right': roadbedRight,
+      'foundation_excavation': foundationExcavation,
+      'offset_left': offsetLeft,
+      'offset_right': offsetRight,
+      'lr': lr,
+      'height': height,
+      'single_count': singleCount,
+      'slope': slope,
+      'angle': angle,
       'gh_d': ghD,
       'gh1': gh1,
       'gh2': gh2,
@@ -180,7 +217,6 @@ class StationData {
     };
   }
 
-  /// JSON에서 생성
   factory StationData.fromJson(Map<String, dynamic> json) {
     return StationData(
       no: json['no'] as String,
@@ -196,6 +232,14 @@ class StationData {
       plannedBankRight: json['planned_bank_right'] as double?,
       roadbedLeft: json['roadbed_left'] as double?,
       roadbedRight: json['roadbed_right'] as double?,
+      foundationExcavation: json['foundation_excavation'] as double?,
+      offsetLeft: json['offset_left'] as double?,
+      offsetRight: json['offset_right'] as double?,
+      lr: json['lr'] as String?,
+      height: json['height'] as double?,
+      singleCount: json['single_count'] as double?,
+      slope: json['slope'] as double?,
+      angle: json['angle'] as double?,
       ghD: json['gh_d'] as double?,
       gh1: json['gh1'] as double?,
       gh2: json['gh2'] as double?,
@@ -216,7 +260,6 @@ class StationData {
     );
   }
 
-  /// CSV 행으로 변환
   List<String> toCsvRow() {
     return [
       no,
@@ -234,6 +277,14 @@ class StationData {
       roadbedRight?.toString() ?? '',
       x?.toString() ?? '',
       y?.toString() ?? '',
+      foundationExcavation?.toString() ?? '',
+      offsetLeft?.toString() ?? '',
+      offsetRight?.toString() ?? '',
+      lr ?? '',
+      height?.toString() ?? '',
+      singleCount?.toString() ?? '',
+      slope?.toString() ?? '',
+      angle?.toString() ?? '',
     ];
   }
 

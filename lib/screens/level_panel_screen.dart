@@ -401,6 +401,13 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
       {'value': 'plannedBankRight', 'label': '계획제방고(R)'},
       {'value': 'roadbedLeft', 'label': '노체(L)'},
       {'value': 'roadbedRight', 'label': '노체(R)'},
+      {'value': 'foundationExcavation', 'label': '기초터파기'},
+      {'value': 'offsetLeft', 'label': '옵셋좌'},
+      {'value': 'offsetRight', 'label': '옵셋우'},
+      {'value': 'height', 'label': 'Height'},
+      {'value': 'singleCount', 'label': '단수'},
+      {'value': 'slope', 'label': '기울기'},
+      {'value': 'angle', 'label': '각도'},
     ];
 
     showModalBottomSheet(
@@ -1007,6 +1014,20 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
         return station.roadbedLeft;
       case 'roadbedRight':
         return station.roadbedRight;
+      case 'foundationExcavation':
+        return station.foundationExcavation;
+      case 'offsetLeft':
+        return station.offsetLeft;
+      case 'offsetRight':
+        return station.offsetRight;
+      case 'height':
+        return station.height;
+      case 'singleCount':
+        return station.singleCount;
+      case 'slope':
+        return station.slope;
+      case 'angle':
+        return station.angle;
       default:
         return station.gh;
     }
@@ -1363,6 +1384,13 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
       case 'plannedBankRight': return '계획제방고(R)';
       case 'roadbedLeft': return '노체(L)';
       case 'roadbedRight': return '노체(R)';
+      case 'foundationExcavation': return '기초터파기';
+      case 'offsetLeft': return '옵셋좌';
+      case 'offsetRight': return '옵셋우';
+      case 'height': return 'Height';
+      case 'singleCount': return '단수';
+      case 'slope': return '기울기';
+      case 'angle': return '각도';
       default: return column ?? '-';
     }
   }
@@ -1383,6 +1411,13 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
       {'value': 'plannedBankRight', 'label': '계획제방고(R)'},
       {'value': 'roadbedLeft', 'label': '노체(L)'},
       {'value': 'roadbedRight', 'label': '노체(R)'},
+      {'value': 'foundationExcavation', 'label': '기초터파기'},
+      {'value': 'offsetLeft', 'label': '옵셋좌'},
+      {'value': 'offsetRight', 'label': '옵셋우'},
+      {'value': 'height', 'label': 'Height'},
+      {'value': 'singleCount', 'label': '단수'},
+      {'value': 'slope', 'label': '기울기'},
+      {'value': 'angle', 'label': '각도'},
     ];
 
     showModalBottomSheet(
