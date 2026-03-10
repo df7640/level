@@ -65,7 +65,7 @@ class _DataTableScreenState extends State<DataTableScreen> {
     '계획제방고(R)': 'plannedBankRight',
     '노체(L)': 'roadbedLeft',
     '노체(R)': 'roadbedRight',
-    '기초터파기': 'foundationExcavation',
+    '기초바닥레벨': 'foundationLevel',
     '옵셋좌': 'offsetLeft',
     '옵셋우': 'offsetRight',
     'LR': 'lr',
@@ -73,6 +73,7 @@ class _DataTableScreenState extends State<DataTableScreen> {
     '단수': 'singleCount',
     '기울기': 'slope',
     '각도': 'angle',
+    '터파기깊이': 'excavationDepth',
     'X': 'x',
     'Y': 'y',
   };
@@ -164,25 +165,29 @@ class _DataTableScreenState extends State<DataTableScreen> {
           style: const TextStyle(fontSize: 16),
         ),
         actions: [
-          // 보간 표시 토글
-          IconButton(
-            icon: Icon(
-              _showInterpolated ? Icons.auto_awesome : Icons.auto_awesome_outlined,
-              color: _showInterpolated ? Colors.amber : null,
-            ),
-            onPressed: () => setState(() => _showInterpolated = !_showInterpolated),
-            tooltip: _showInterpolated ? '보간 데이터 숨기기' : '보간 데이터 보기',
-          ),
-          // 컬럼 선택
-          IconButton(
-            icon: const Icon(Icons.view_column),
-            onPressed: _showColumnSelector,
-            tooltip: '컬럼 선택',
-          ),
-          // 더보기 메뉴
           PopupMenuButton<String>(
             onSelected: _handleMenuAction,
             itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'toggle_interpolated',
+                child: ListTile(
+                  leading: Icon(
+                    _showInterpolated ? Icons.auto_awesome : Icons.auto_awesome_outlined,
+                    color: _showInterpolated ? Colors.amber : null,
+                  ),
+                  title: Text(_showInterpolated ? '보간 데이터 숨기기' : '보간 데이터 보기'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'column_select',
+                child: ListTile(
+                  leading: Icon(Icons.view_column),
+                  title: Text('컬럼 선택'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuDivider(),
               const PopupMenuItem(
                 value: 'import_excel',
                 child: ListTile(
@@ -244,7 +249,7 @@ class _DataTableScreenState extends State<DataTableScreen> {
                 value: 'font_size',
                 child: ListTile(
                   leading: const Icon(Icons.text_fields),
-                  title: Text('글꼴 크기${widget.fontSizeDelta > 0 ? " (+$widget.fontSizeDelta)" : ""}'),
+                  title: Text('글꼴 크기${widget.fontSizeDelta > 0 ? " (+${widget.fontSizeDelta})" : ""}'),
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
@@ -705,18 +710,27 @@ class _DataTableScreenState extends State<DataTableScreen> {
     final dp = widget.decimalPlaces;
     final widths = <String, double>{};
 
+    double measureText(String text, double size, {FontWeight weight = FontWeight.normal}) {
+      final tp = TextPainter(
+        text: TextSpan(text: text, style: TextStyle(fontSize: size, fontWeight: weight)),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+      )..layout();
+      return tp.width;
+    }
+
     for (final col in columnNames) {
       final fieldName = _availableColumns[col];
-      // 헤더 텍스트 너비
-      double maxWidth = col.length * headerFontSize * 0.65;
+      // 헤더 텍스트 너비 (실측)
+      double maxWidth = measureText(col, headerFontSize, weight: FontWeight.bold);
 
-      // 셀 데이터 너비
+      // 셀 데이터 너비 (실측, 샘플링: 최대 50개)
       if (fieldName != null) {
-        for (final s in stations) {
-          final value = _getFieldValue(s, fieldName);
+        final step = stations.length > 50 ? (stations.length / 50).ceil() : 1;
+        for (int i = 0; i < stations.length; i += step) {
+          final value = _getFieldValue(stations[i], fieldName);
           if (value != null) {
-            final text = value.toStringAsFixed(dp);
-            final textWidth = text.length * fontSize * 0.6;
+            final textWidth = measureText(value.toStringAsFixed(dp), fontSize);
             if (textWidth > maxWidth) maxWidth = textWidth;
           }
         }
@@ -918,8 +932,8 @@ class _DataTableScreenState extends State<DataTableScreen> {
         return station.roadbedLeft;
       case 'roadbedRight':
         return station.roadbedRight;
-      case 'foundationExcavation':
-        return station.foundationExcavation;
+      case 'foundationLevel':
+        return station.foundationLevel;
       case 'offsetLeft':
         return station.offsetLeft;
       case 'offsetRight':
@@ -932,6 +946,8 @@ class _DataTableScreenState extends State<DataTableScreen> {
         return station.slope;
       case 'angle':
         return station.angle;
+      case 'excavationDepth':
+        return station.excavationDepth;
       case 'x':
         return station.x;
       case 'y':
@@ -1141,6 +1157,12 @@ class _DataTableScreenState extends State<DataTableScreen> {
 
   void _handleMenuAction(String action) async {
     switch (action) {
+      case 'toggle_interpolated':
+        setState(() => _showInterpolated = !_showInterpolated);
+        break;
+      case 'column_select':
+        _showColumnSelector();
+        break;
       case 'import_excel':
         await _importExcel();
         break;
@@ -1253,6 +1275,7 @@ class _DataTableScreenState extends State<DataTableScreen> {
       context: context,
       builder: (context) {
         int selectedInterval = 5;
+        bool includeOriginalPlus = true;
         return StatefulBuilder(
           builder: (context, setDialogState) => AlertDialog(
             title: const Text('보간 실행'),
@@ -1274,7 +1297,22 @@ class _DataTableScreenState extends State<DataTableScreen> {
                     setDialogState(() => selectedInterval = value.first);
                   },
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('원본 플러스체인 포함', style: TextStyle(fontSize: 14)),
+                  subtitle: Text(
+                    includeOriginalPlus
+                        ? '원본 데이터의 플러스체인도 결과에 포함'
+                        : '${selectedInterval}m 간격 보간만 생성',
+                    style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                  ),
+                  value: includeOriginalPlus,
+                  onChanged: (v) {
+                    setDialogState(() => includeOriginalPlus = v);
+                  },
+                ),
+                const SizedBox(height: 8),
                 Text(
                   '기본 측점 사이에 ${selectedInterval}m 간격으로 보간합니다',
                   style: TextStyle(fontSize: 12, color: Colors.grey[600]),
@@ -1289,7 +1327,7 @@ class _DataTableScreenState extends State<DataTableScreen> {
               ElevatedButton(
                 onPressed: () {
                   Navigator.pop(context);
-                  _executeInterpolation(selectedInterval);
+                  _executeInterpolation(selectedInterval, includeOriginalPlus: includeOriginalPlus);
                 },
                 child: const Text('실행'),
               ),
@@ -1301,7 +1339,7 @@ class _DataTableScreenState extends State<DataTableScreen> {
   }
 
   /// 보간 실행
-  Future<void> _executeInterpolation(int interval) async {
+  Future<void> _executeInterpolation(int interval, {bool includeOriginalPlus = true}) async {
     // 원본 데이터 (기본측점 + 원본 플러스체인) - 보간이 아닌 것만
     final originalStations = widget.stations.where((s) => !s.isInterpolated).toList();
 
@@ -1309,6 +1347,7 @@ class _DataTableScreenState extends State<DataTableScreen> {
     final result = InterpolationService.interpolateAllStations(
       allStations: originalStations,
       interval: interval,
+      includeOriginalPlus: includeOriginalPlus,
     );
 
     // DB에 저장

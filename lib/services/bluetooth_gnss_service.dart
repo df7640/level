@@ -59,6 +59,9 @@ class BluetoothGnssService extends ChangeNotifier {
   final NmeaParser _parser = NmeaParser();
   String _buffer = '';
 
+  /// 외부 파일 로거 (NtripService의 _log와 공유)
+  void Function(String msg)? fileLogger;
+
   // 위치 유무와 관계없이 항상 업데이트되는 상태값
   int _satellites = 0;
   int _fixQuality = 0;
@@ -97,6 +100,7 @@ class BluetoothGnssService extends ChangeNotifier {
       notifyListeners();
 
       debugPrint('[GNSS] 연결됨: $_deviceName');
+      fileLogger?.call('[BT] 연결됨: $_deviceName (${device.address})');
 
       _connection!.input!.listen(
         (Uint8List data) {
@@ -105,18 +109,21 @@ class BluetoothGnssService extends ChangeNotifier {
         },
         onDone: () {
           debugPrint('[GNSS] 연결 종료');
+          fileLogger?.call('[BT] 연결 종료');
           _connectionState = GnssConnectionState.disconnected;
           _position = null;
           notifyListeners();
         },
         onError: (error) {
           debugPrint('[GNSS] 수신 오류: $error');
+          fileLogger?.call('[BT] 수신 오류: $error');
           _connectionState = GnssConnectionState.error;
           notifyListeners();
         },
       );
     } catch (e) {
       debugPrint('[GNSS] 연결 실패: $e');
+      fileLogger?.call('[BT] 연결 실패: $e');
       _connectionState = GnssConnectionState.error;
       notifyListeners();
     }
@@ -144,9 +151,15 @@ class BluetoothGnssService extends ChangeNotifier {
       if (nmeaPos == null) continue;
 
       // 위성수/Fix상태는 항상 업데이트 (fixQuality=0이어도)
+      final prevFix = _fixQuality;
       _satellites = nmeaPos.satellites;
       _fixQuality = nmeaPos.fixQuality;
       changed = true;
+
+      // Fix 변화 시 파일 로그
+      if (prevFix != _fixQuality) {
+        fileLogger?.call('[BT] Fix변화: $prevFix→$_fixQuality 위성:$_satellites HDOP:${nmeaPos.hdop} diffAge:${nmeaPos.diffAge}');
+      }
 
       // 좌표가 파싱되면 업데이트 (fixQuality=0이어도 좌표 자체는 유효할 수 있음)
       if (nmeaPos.latitude != 0.0 && nmeaPos.longitude != 0.0) {
@@ -172,11 +185,37 @@ class BluetoothGnssService extends ChangeNotifier {
     if (changed) notifyListeners();
   }
 
+  int _rtcmBytesSent = 0;
+  int _rtcmSendCount = 0;
+  int _rtcmFlushErrors = 0;
+
+  /// RTCM 전송 통계
+  int get rtcmBytesSent => _rtcmBytesSent;
+  int get rtcmSendCount => _rtcmSendCount;
+  int get rtcmFlushErrors => _rtcmFlushErrors;
+
   /// RTCM 보정 데이터를 수신기로 전송 (NTRIP → BT → i80)
   void sendRtcm(Uint8List data) {
-    if (_connection == null || _connectionState != GnssConnectionState.connected) return;
+    if (_connection == null || _connectionState != GnssConnectionState.connected) {
+      debugPrint('[GNSS] RTCM 전송 불가 - BT 미연결 (${_connectionState.name})');
+      return;
+    }
     try {
       _connection!.output.add(data);
+      _connection!.output.allSent.then((_) {
+        // flush 성공
+      }).catchError((e) {
+        _rtcmFlushErrors++;
+        debugPrint('[GNSS] RTCM flush 실패 (#$_rtcmFlushErrors): $e');
+      });
+      _rtcmBytesSent += data.length;
+      _rtcmSendCount++;
+      if (_rtcmSendCount % 50 == 1) {
+        final errInfo = _rtcmFlushErrors > 0 ? ' 오류:$_rtcmFlushErrors' : '';
+        final msg = '[BT] RTCM→수신기: ${data.length}B (누적 ${(_rtcmBytesSent / 1024).toStringAsFixed(1)}KB, ${_rtcmSendCount}회$errInfo)';
+        debugPrint('[GNSS] $msg');
+        fileLogger?.call(msg);
+      }
     } catch (e) {
       debugPrint('[GNSS] RTCM 전송 실패: $e');
     }
@@ -184,19 +223,27 @@ class BluetoothGnssService extends ChangeNotifier {
 
   /// 연결 해제
   Future<void> disconnect() async {
-    try {
-      await _connection?.close();
-    } catch (_) {}
+    final conn = _connection;
     _connection = null;
     _connectionState = GnssConnectionState.disconnected;
     _position = null;
     _buffer = '';
     notifyListeners();
+
+    if (conn != null) {
+      try {
+        await conn.finish();
+      } catch (_) {
+        try { await conn.close(); } catch (_) {}
+      }
+    }
   }
 
   @override
   void dispose() {
-    disconnect();
+    // 동기적으로 소켓 닫기 시도 (dispose는 await 불가)
+    try { _connection?.close(); } catch (_) {}
+    _connection = null;
     super.dispose();
   }
 }

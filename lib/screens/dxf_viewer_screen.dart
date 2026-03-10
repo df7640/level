@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/dimension_data.dart';
 import '../models/station_data.dart';
@@ -14,6 +15,18 @@ import '../widgets/dimension_painter.dart';
 import '../widgets/gps_position_painter.dart';
 import '../widgets/magnification_painter.dart';
 import '../widgets/snap_overlay_painter.dart';
+import '../widgets/user_entity_painter.dart';
+
+/// Undo/Redo 액션 종류
+enum _UndoType { addUserEntity, addDimension, addPoint, deleteEntity, changeProperty }
+
+/// Undo/Redo 액션 데이터
+class _UndoAction {
+  final _UndoType type;
+  final dynamic data; // 타입별 데이터
+
+  _UndoAction(this.type, this.data);
+}
 
 /// DXF 뷰어 화면
 class DxfViewerScreen extends StatefulWidget {
@@ -76,8 +89,31 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   bool _showDimPanel = false; // 치수 관리 패널
   bool _showDimStylePanel = false; // 스타일 설정 패널
   Offset? _cursorTipDxf; // 커서 팁 DXF 좌표 (확대 원용)
+  Offset? _cursorTipScreen; // 커서 팁 화면 좌표 (확대창 위치 결정용)
 
   bool _edgePanDone = false; // 가장자리 자동패닝 1회 제한
+
+  // 그리기 모드: 'line', 'leader', 'text', null
+  String? _activeDrawMode;
+  ({double dxfX, double dxfY})? _drawFirstPoint; // 그리기 첫 점
+  List<Map<String, double>> _leaderPoints = []; // 지시선 점들
+  final List<Map<String, dynamic>> _userEntities = []; // 사용자 추가 엔티티
+  int _drawColor = 0xFFFFFF00; // 기본 노란색
+  double _drawLineWidth = 1.0;
+  double _drawTextSize = 14.0;
+  int _drawPointStyle = 34; // PDMODE (circle + cross)
+
+  // 엔티티 선택 모드
+  bool _isSelectMode = false;
+  final List<Map<String, dynamic>> _selectedEntities = [];
+  bool _showPropertyPanel = false;
+
+  int _dxfRepaintVersion = 0; // DxfPainter 강제 repaint 트리거
+
+  // Undo/Redo 스택
+  final List<_UndoAction> _undoStack = [];
+  final List<_UndoAction> _redoStack = [];
+  static const int _maxUndoSteps = 50;
 
   // GPS
   final BluetoothGnssService _gnssService = BluetoothGnssService();
@@ -93,6 +129,27 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   final StakeoutBeepService _beepService = StakeoutBeepService();
   double _antennaHeight = 1.8000; // 안테나 높이 (m)
 
+  // GPS 정보 패널 표시 여부
+  bool _showInfoPanel = false;
+
+  // 줌 배율 프리뷰 모드
+  bool _zoomPreviewMode = false;
+  double _previewZoom = 1.0;
+  String _previewLabel = '';
+
+  // 측설 자동 줌 배율 (거리 임계값 → 줌 레벨)
+  // 거리가 해당 임계값 이내면 대응하는 줌 배율 적용
+  final List<(double distance, double zoom)> _autoZoomLevels = [
+    (10.0,  10.0),   // 10m 이내
+    (5.0,   20.0),   // 5m 이내
+    (2.0,   50.0),   // 2m 이내
+    (1.0,   100.0),  // 1m 이내
+    (0.5,   200.0),  // 50cm 이내
+    (0.3,   300.0),  // 30cm 이내
+    (0.1,   500.0),  // 10cm 이내
+    (0.05,  800.0),  // 5cm 이내
+  ];
+
   /// 좌표가 있는 측점만 필터
   List<StationData> get _stationsWithCoords =>
       widget.stations.where((s) => s.x != null && s.y != null).toList();
@@ -106,13 +163,40 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     return result;
   }
 
+  /// 자동 줌 배율 저장
+  Future<void> _saveAutoZoomLevels() async {
+    final prefs = await SharedPreferences.getInstance();
+    final values = _autoZoomLevels.map((l) => '${l.$1}:${l.$2}').join(',');
+    await prefs.setString('auto_zoom_levels', values);
+  }
+
+  /// 자동 줌 배율 로드
+  Future<void> _loadAutoZoomLevels() async {
+    final prefs = await SharedPreferences.getInstance();
+    final str = prefs.getString('auto_zoom_levels');
+    if (str == null || str.isEmpty) return;
+    try {
+      final parts = str.split(',');
+      for (int i = 0; i < parts.length && i < _autoZoomLevels.length; i++) {
+        final kv = parts[i].split(':');
+        if (kv.length == 2) {
+          _autoZoomLevels[i] = (double.parse(kv[0]), double.parse(kv[1]));
+        }
+      }
+    } catch (_) {}
+  }
+
   @override
   void initState() {
     super.initState();
     _loadSampleDxf();
+    _loadAutoZoomLevels();
     _gnssService.addListener(_onGnssUpdate);
     _ntripService.addListener(_onNtripUpdate);
     _ntripService.loadConfig();
+    _ntripService.initFileLog();
+    // BT 이벤트도 같은 파일에 기록
+    _gnssService.fileLogger = (msg) => _ntripService.logExternal(msg);
     // NTRIP RTCM → 블루투스 수신기로 전달
     _ntripService.onRtcmData = (data) {
       _gnssService.sendRtcm(data);
@@ -124,9 +208,11 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     _gpsCenterTimer?.cancel();
     _beepService.dispose();
     _gnssService.removeListener(_onGnssUpdate);
-    _gnssService.dispose();
     _ntripService.removeListener(_onNtripUpdate);
+    // NTRIP 먼저 끊고 BT 해제 (순서 중요)
     _ntripService.dispose();
+    _gnssService.disconnect();
+    _gnssService.dispose();
     super.dispose();
   }
 
@@ -175,7 +261,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       _ntripService.updateGga(_gnssService.lastGga!);
     }
 
-    // 측설 거리/비프 업데이트 (매 NMEA 업데이트마다)
+    // 측설 거리/비프 업데이트
     if (_stakeoutTarget != null && _gnssService.position != null) {
       final pos = _gnssService.position!;
       final dx = _stakeoutTarget!.dxfX - pos.tmX;
@@ -249,13 +335,17 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
     double targetZoom = _zoom;
 
-    // 측설 활성 시 거리 기반 자동 줌 (테라에스 스타일)
-    // 1m 이내: 급격히 확대, cm 단위: 극도로 확대
+    // 측설 활성 시 거리 기반 단계별 자동 줌
     if (_stakeoutTarget != null) {
       final dx = _stakeoutTarget!.dxfX - pos.tmX;
       final dy = _stakeoutTarget!.dxfY - pos.tmY;
       final distance = sqrt(dx * dx + dy * dy);
-      targetZoom = (100.0 / (distance + 0.05)).clamp(5.0, 800.0);
+      targetZoom = 5.0; // 기본 (10m 밖)
+      for (final level in _autoZoomLevels) {
+        if (distance <= level.$1) {
+          targetZoom = level.$2;
+        }
+      }
     }
 
     _centerOnDxfPoint(pos.tmX, pos.tmY, targetZoom: targetZoom);
@@ -291,6 +381,52 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       if (targetZoom != null) _zoom = targetZoom;
       _offset = Offset(newOffsetDx, newOffsetDy);
     });
+  }
+
+  /// GPS 위치와 포인트 위치가 도면뷰에 가득 차도록 줌/오프셋 조정
+  void _zoomToFitGpsAndPoint(double ptX, double ptY) {
+    final pos = _gnssService.position;
+    if (pos == null || _dxfData == null || _lastCanvasSize == null) return;
+
+    final canvasSize = _lastCanvasSize!;
+    final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
+    final minX = bounds['minX'] as double;
+    final minY = bounds['minY'] as double;
+    final maxX = bounds['maxX'] as double;
+    final maxY = bounds['maxY'] as double;
+    final dxfWidth = maxX - minX;
+    final dxfHeight = maxY - minY;
+    if (dxfWidth <= 0 || dxfHeight <= 0) return;
+
+    final sX = canvasSize.width * 0.9 / dxfWidth;
+    final sY = canvasSize.height * 0.9 / dxfHeight;
+    final baseScale = sX < sY ? sX : sY;
+
+    // 두 점의 범위
+    final gpsX = pos.tmX;
+    final gpsY = pos.tmY;
+    final fitMinX = gpsX < ptX ? gpsX : ptX;
+    final fitMaxX = gpsX > ptX ? gpsX : ptX;
+    final fitMinY = gpsY < ptY ? gpsY : ptY;
+    final fitMaxY = gpsY > ptY ? gpsY : ptY;
+    final spanX = fitMaxX - fitMinX;
+    final spanY = fitMaxY - fitMinY;
+
+    // 여유 30% 포함하여 줌 계산
+    final margin = 1.3;
+    double zoom;
+    if (spanX <= 0.001 && spanY <= 0.001) {
+      zoom = 200.0; // 거의 같은 위치
+    } else {
+      final neededZoomX = spanX > 0 ? (canvasSize.width * 0.9) / (spanX * margin * baseScale) : 800.0;
+      final neededZoomY = spanY > 0 ? (canvasSize.height * 0.9) / (spanY * margin * baseScale) : 800.0;
+      zoom = (neededZoomX < neededZoomY ? neededZoomX : neededZoomY).clamp(1.0, 800.0);
+    }
+
+    // 중심점
+    final centerX = (fitMinX + fitMaxX) / 2;
+    final centerY = (fitMinY + fitMaxY) / 2;
+    _centerOnDxfPoint(centerX, centerY, targetZoom: zoom);
   }
 
   /// 측설 모드 종료
@@ -415,16 +551,23 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                     _showStatusMessage('NTRIP 연결이 해제되었습니다', Colors.orange);
                   },
                 ),
-              // NTRIP 디버그 로그
-              if (_ntripService.debugLog.isNotEmpty)
-                ListTile(
-                  leading: const Icon(Icons.bug_report, color: Colors.white54),
-                  title: const Text('NTRIP 연결 로그', style: TextStyle(color: Colors.white)),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _showNtripLogDialog();
-                  },
+              // NTRIP 디버그 로그 (항상 표시)
+              ListTile(
+                leading: const Icon(Icons.bug_report, color: Colors.white54),
+                title: Text(
+                  'NTRIP 로그${_ntripService.debugLog.isNotEmpty ? " (${_ntripService.debugLog.length})" : ""}',
+                  style: const TextStyle(color: Colors.white),
                 ),
+                subtitle: _ntripService.hasReceivedMsm
+                    ? const Text('MSM 수신중', style: TextStyle(color: Colors.greenAccent, fontSize: 11))
+                    : _ntripService.bytesReceived > 0
+                        ? const Text('MSM 미수신 - 마운트포인트 확인', style: TextStyle(color: Colors.orangeAccent, fontSize: 11))
+                        : null,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showNtripLogDialog();
+                },
+              ),
               const SizedBox(height: 8),
             ],
           ),
@@ -453,10 +596,10 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   /// NTRIP 설정 다이얼로그
   void _showNtripSettingsDialog() async {
     final config = _ntripService.config;
-    final hostCtrl = TextEditingController(text: config?.host ?? 'gnss.ngii.go.kr');
+    final hostCtrl = TextEditingController(text: config?.host ?? 'rts1.ngii.go.kr');
     final portCtrl = TextEditingController(text: (config?.port ?? 2101).toString());
-    final mountCtrl = TextEditingController(text: config?.mountPoint ?? 'VRS-RTCM31');
-    final userCtrl = TextEditingController(text: config?.username ?? '');
+    final mountCtrl = TextEditingController(text: config?.mountPoint ?? 'VRS-RTCM34');
+    final userCtrl = TextEditingController(text: config?.username ?? 'ysc7640');
     final passCtrl = TextEditingController(text: config?.password ?? 'ngii');
 
     // 마운트포인트 목록
@@ -683,20 +826,55 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                     color: _ntripService.isConnected ? Colors.greenAccent : Colors.orange,
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    'NTRIP 연결 로그  (${(_ntripService.bytesReceived / 1024).toStringAsFixed(1)}KB 수신)',
-                    style: const TextStyle(color: Colors.white, fontSize: 14),
+                  Expanded(
+                    child: Text(
+                      'NTRIP 로그 ${(_ntripService.bytesReceived / 1024).toStringAsFixed(1)}KB${_ntripService.hasReceivedMsm ? " MSM✓" : ""}',
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
               content: SizedBox(
                 width: double.maxFinite,
                 height: 400,
-                child: logs.isEmpty
-                    ? const Center(
-                        child: Text('로그 없음', style: TextStyle(color: Colors.white38)),
-                      )
-                    : ListView.builder(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // RTCM 메시지 타입 요약
+                    if (_ntripService.rtcmTypeCounts.isNotEmpty) ...[
+                      Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: Colors.black45,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          'RTCM: ${_ntripService.rtcmTypeCounts.entries.map((e) => '${NtripService.rtcmTypeName(e.key)}(${e.value})').join(', ')}',
+                          style: TextStyle(
+                            color: _ntripService.hasReceivedMsm ? Colors.greenAccent : Colors.orangeAccent,
+                            fontSize: 10,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                    ],
+                    // BT 릴레이 상태
+                    if (_gnssService.rtcmBytesSent > 0) ...[
+                      Text(
+                        'BT전송: ${(_gnssService.rtcmBytesSent / 1024).toStringAsFixed(1)}KB (${_gnssService.rtcmSendCount}회)${_gnssService.rtcmFlushErrors > 0 ? " 오류:${_gnssService.rtcmFlushErrors}" : ""}',
+                        style: const TextStyle(color: Colors.cyanAccent, fontSize: 10, fontFamily: 'monospace'),
+                      ),
+                      const SizedBox(height: 4),
+                    ],
+                    // 로그 목록
+                    Expanded(
+                      child: logs.isEmpty
+                          ? const Center(
+                              child: Text('로그 없음', style: TextStyle(color: Colors.white38)),
+                            )
+                          : ListView.builder(
                         itemCount: logs.length,
                         itemBuilder: (_, i) {
                           final line = logs[i];
@@ -718,6 +896,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                           );
                         },
                       ),
+                    ),
+                  ],
+                ),
               ),
               actions: [
                 TextButton(
@@ -740,6 +921,31 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   }
 
   /// 페어링된 블루투스 기기 선택 다이얼로그
+  /// GPS 연결 후 NTRIP 자동 연결 (3초 대기 후 GGA 확보되면 연결)
+  void _autoConnectNtrip() {
+    if (_ntripService.isConnected || _ntripService.state == NtripState.connecting) return;
+    Future.delayed(const Duration(seconds: 3), () async {
+      if (!mounted) return;
+      if (_gnssService.connectionState != GnssConnectionState.connected) return;
+      if (_ntripService.isConnected) return;
+
+      // 저장된 설정 또는 기본값 사용
+      var config = _ntripService.config;
+      if (config == null || config.username.isEmpty) {
+        config = const NtripConfig(
+          host: 'rts1.ngii.go.kr',
+          port: 2101,
+          mountPoint: 'VRS-RTCM34',
+          username: 'ysc7640',
+          password: 'ngii',
+        );
+        await config.save();
+      }
+      _ntripService.connect(config);
+      _showStatusMessage('NTRIP 자동 연결 중...', Colors.orange);
+    });
+  }
+
   Future<void> _showBluetoothDeviceDialog() async {
     final devices = await _gnssService.getPairedDevices();
 
@@ -790,6 +996,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                       onTap: () {
                         Navigator.pop(ctx);
                         _gnssService.connect(device);
+                        // GPS 연결 후 NTRIP 자동 연결
+                        _autoConnectNtrip();
                       },
                     )),
               const SizedBox(height: 8),
@@ -1081,29 +1289,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     });
   }
 
-  /// 전체 치수 삭제
-  void _deleteAllDimensions() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('모든 치수 삭제'),
-        content: Text('${_dimResults.length}개의 치수를 모두 삭제하시겠습니까?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('취소')),
-          TextButton(
-            onPressed: () {
-              setState(() {
-                _dimResults.clear();
-                _selectedDimIndex = null;
-              });
-              Navigator.pop(ctx);
-            },
-            child: const Text('삭제', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-  }
+
 
   /// 치수 타입 선택 메뉴
   void _showDimTypeMenu() {
@@ -1435,12 +1621,13 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       _highlightEntity = result.entity;
       _activeSnap = result.snap;
       _cursorTipDxf = Offset(tipDxfX, tipDxfY);
+      _cursorTipScreen = cursorTip;
     });
   }
 
   /// 치수 배치 단계: 터치 위치를 DXF 좌표로 변환하여 치수선 위치 결정
   void _handleDimPlacement(Offset touchPoint, Size canvasSize) {
-    if (_dxfData == null) return;
+    if (_dxfData == null || _dimPending == null) return;
 
     final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
     final minX = bounds['minX'] as double;
@@ -1460,15 +1647,151 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
     setState(() {
       _dimPlacementDxf = Offset(dxfX, dxfY);
+
+      // 각도 치수는 자동 감지 안 함
+      if (_dimPending!.type != DimensionType.angular) {
+        final p = _dimPending!;
+        // 두 측정점의 중점에서 배치점까지의 변위
+        final midX = (p.x1 + p.x2) / 2;
+        final midY = (p.y1 + p.y2) / 2;
+        final dispX = (dxfX - midX).abs();
+        final dispY = (dxfY - midY).abs();
+        // 두 측정점 간 변위
+        final lineDx = (p.x2 - p.x1).abs();
+        final lineDy = (p.y2 - p.y1).abs();
+
+        DimensionType autoType;
+        // 측정선이 거의 수평(lineDy 작음)이면: 위/아래 드래그 → 수평치수, 좌/우 드래그 → 수직치수
+        // 측정선이 거의 수직(lineDx 작음)이면: 좌/우 드래그 → 수직치수, 위/아래 드래그 → 수평치수
+        // 사선인 경우: 배치 방향에 따라 결정
+        if (lineDx < 0.001 && lineDy < 0.001) {
+          autoType = DimensionType.aligned;
+        } else {
+          // 측정선 각도 (0=수평, 90=수직)
+          final lineAngle = atan2(lineDy, lineDx);
+          // 배치점이 측정선에 대해 수직 방향으로 얼마나 벗어났는지
+          // 측정선 방향 단위벡터
+          final len = sqrt(lineDx * lineDx + lineDy * lineDy);
+          final ux = (p.x2 - p.x1) / len;
+          final uy = (p.y2 - p.y1) / len;
+          // 배치점-중점 벡터를 측정선 방향/수직 방향으로 분해
+          final toPlaceX = dxfX - midX;
+          final toPlaceY = dxfY - midY;
+          final parallel = (toPlaceX * ux + toPlaceY * uy).abs();
+          final perp = (toPlaceX * (-uy) + toPlaceY * ux).abs();
+
+          if (lineAngle < 0.3) {
+            // 거의 수평 측정선 → 대부분 수평치수, 매우 수평 드래그시 수직치수
+            autoType = dispY > dispX * 0.3 ? DimensionType.horizontal : DimensionType.vertical;
+          } else if (lineAngle > 1.27) {
+            // 거의 수직 측정선 → 대부분 수직치수, 매우 수직 드래그시 수평치수
+            autoType = dispX > dispY * 0.3 ? DimensionType.vertical : DimensionType.horizontal;
+          } else {
+            // 사선 → 수직 방향 벗어남이 크면 정렬, 아니면 방향에 따라
+            if (perp > parallel * 0.7) {
+              autoType = DimensionType.aligned;
+            } else if (dispY > dispX) {
+              autoType = DimensionType.horizontal;
+            } else {
+              autoType = DimensionType.vertical;
+            }
+          }
+        }
+
+        // 타입이 변경되면 값도 재계산
+        if (autoType != p.type) {
+          final dx = p.x2 - p.x1;
+          final dy = p.y2 - p.y1;
+          double value;
+          switch (autoType) {
+            case DimensionType.aligned:
+              value = sqrt(dx * dx + dy * dy);
+              break;
+            case DimensionType.horizontal:
+              value = dx.abs();
+              break;
+            case DimensionType.vertical:
+              value = dy.abs();
+              break;
+            case DimensionType.angular:
+              value = p.value;
+              break;
+          }
+          _dimPending = (
+            x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2,
+            x3: p.x3, y3: p.y3,
+            value: value, type: autoType,
+          );
+          _activeDimType = autoType;
+        }
+      }
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    // 줌 배율 프리뷰 모드
+    if (_zoomPreviewMode) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            _buildDxfView(),
+            // 상단 라벨
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 8,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.7),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '$_previewLabel  x${_previewZoom.toInt()}',
+                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ),
+            // 나가기 버튼
+            Positioned(
+              bottom: MediaQuery.of(context).padding.bottom + 24,
+              right: 24,
+              child: FloatingActionButton(
+                heroTag: 'exitPreview',
+                onPressed: _exitZoomPreview,
+                backgroundColor: Colors.red[700],
+                child: const Icon(Icons.close, color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('DXF 도면'),
         actions: [
+          // Undo
+          IconButton(
+            icon: Icon(Icons.undo, color: _undoStack.isNotEmpty ? Colors.white : Colors.white24),
+            onPressed: _undoStack.isNotEmpty ? _undo : null,
+            tooltip: '실행취소',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 36),
+          ),
+          // Redo
+          IconButton(
+            icon: Icon(Icons.redo, color: _redoStack.isNotEmpty ? Colors.white : Colors.white24),
+            onPressed: _redoStack.isNotEmpty ? _redo : null,
+            tooltip: '다시실행',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 36),
+          ),
           // GPS / NTRIP 메뉴 버튼
           Stack(
             alignment: Alignment.center,
@@ -1533,7 +1856,6 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
           : _dxfData != null
               ? Column(
                   children: [
-                    if (_stationsWithCoords.isNotEmpty) _buildStationSelector(),
                     Expanded(child: _buildDxfView()),
                     _buildBottomBar(),
                   ],
@@ -1624,79 +1946,778 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   List<StationData> get _baseStationsWithCoords =>
       _stationsWithCoords.where((s) => s.isBaseStation).toList();
 
-  /// 측점 선택 버튼 + 토글 패널
-  Widget _buildStationSelector() {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        // 토글 버튼 바
-        GestureDetector(
-          onTap: () => setState(() => _showStationPanel = !_showStationPanel),
-          child: Container(
-            height: 36,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            color: Colors.grey[850],
-            child: Row(
-              children: [
-                const Icon(Icons.location_on, color: Colors.cyan, size: 18),
-                const SizedBox(width: 6),
-                Text(
-                  _selectedStation != null
-                      ? '측점 ${_shortStationNo(_selectedStation!.no)}'
-                      : '측점 선택',
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+
+  // ===== Undo/Redo =====
+
+  void _pushUndo(_UndoAction action) {
+    _undoStack.add(action);
+    if (_undoStack.length > _maxUndoSteps) _undoStack.removeAt(0);
+    _redoStack.clear();
+  }
+
+  void _undo() {
+    if (_undoStack.isEmpty) return;
+    final action = _undoStack.removeLast();
+    setState(() {
+      switch (action.type) {
+        case _UndoType.addUserEntity:
+          final entity = action.data as Map<String, dynamic>;
+          _userEntities.remove(entity);
+          _redoStack.add(action);
+          break;
+        case _UndoType.addDimension:
+          final dim = action.data as DimensionResult;
+          _dimResults.remove(dim);
+          _redoStack.add(action);
+          break;
+        case _UndoType.addPoint:
+          final pt = action.data as ({SnapType type, double dxfX, double dxfY});
+          _confirmedPoints.remove(pt);
+          // 측설 타겟도 해제
+          if (_stakeoutTarget != null &&
+              _stakeoutTarget!.dxfX == pt.dxfX && _stakeoutTarget!.dxfY == pt.dxfY) {
+            _stakeoutTarget = null;
+            _beepService.stop();
+          }
+          _redoStack.add(action);
+          break;
+        case _UndoType.deleteEntity:
+          // data = {'entity': Map, 'source': 'user'|'dxf', 'index': int?}
+          final info = action.data as Map<String, dynamic>;
+          final entity = info['entity'] as Map<String, dynamic>;
+          if (info['source'] == 'user') {
+            _userEntities.add(entity);
+          } else {
+            final entities = _dxfData?['entities'] as List?;
+            entities?.add(entity);
+            _dxfRepaintVersion++;
+          }
+          _redoStack.add(action);
+          break;
+        case _UndoType.changeProperty:
+          // data = {'entity': Map, 'field': String, 'oldValue': dynamic, 'newValue': dynamic}
+          final info = action.data as Map<String, dynamic>;
+          final entity = info['entity'] as Map<String, dynamic>;
+          entity[info['field']] = info['oldValue'];
+          _dxfRepaintVersion++;
+          _redoStack.add(action);
+          break;
+      }
+    });
+  }
+
+  void _redo() {
+    if (_redoStack.isEmpty) return;
+    final action = _redoStack.removeLast();
+    setState(() {
+      switch (action.type) {
+        case _UndoType.addUserEntity:
+          _userEntities.add(action.data as Map<String, dynamic>);
+          _undoStack.add(action);
+          break;
+        case _UndoType.addDimension:
+          _dimResults.add(action.data as DimensionResult);
+          _undoStack.add(action);
+          break;
+        case _UndoType.addPoint:
+          _confirmedPoints.add(action.data as ({SnapType type, double dxfX, double dxfY}));
+          _undoStack.add(action);
+          break;
+        case _UndoType.deleteEntity:
+          final info = action.data as Map<String, dynamic>;
+          final entity = info['entity'] as Map<String, dynamic>;
+          if (info['source'] == 'user') {
+            _userEntities.remove(entity);
+          } else {
+            (_dxfData?['entities'] as List?)?.remove(entity);
+            _dxfRepaintVersion++;
+          }
+          _undoStack.add(action);
+          break;
+        case _UndoType.changeProperty:
+          final info = action.data as Map<String, dynamic>;
+          final entity = info['entity'] as Map<String, dynamic>;
+          entity[info['field']] = info['newValue'];
+          _dxfRepaintVersion++;
+          _undoStack.add(action);
+          break;
+      }
+    });
+  }
+
+  // ===== 그리기/선택 모드 메서드 =====
+
+  /// 화면 좌표 → DXF 좌표
+  ({double x, double y})? _screenToDxf(Offset screenPt, Size canvasSize) {
+    if (_dxfData == null) return null;
+    final bounds = _dxfData!['bounds'] as Map<String, dynamic>;
+    final minX = bounds['minX'] as double;
+    final minY = bounds['minY'] as double;
+    final dxfW = (bounds['maxX'] as double) - minX;
+    final dxfH = (bounds['maxY'] as double) - minY;
+    if (dxfW <= 0 || dxfH <= 0) return null;
+    final sX = canvasSize.width * 0.9 / dxfW;
+    final sY = canvasSize.height * 0.9 / dxfH;
+    final baseScale = sX < sY ? sX : sY;
+    final scale = baseScale * _zoom;
+    final cOffX = (canvasSize.width - dxfW * scale) / 2;
+    final cOffY = (canvasSize.height - dxfH * scale) / 2;
+    final dxfX = (screenPt.dx - cOffX - _offset.dx) / scale + minX;
+    final dxfY = (canvasSize.height - screenPt.dy - cOffY - _offset.dy) / scale + minY;
+    return (x: dxfX, y: dxfY);
+  }
+
+  /// 그리기 모드 터치 처리 (onScaleStart/Update에서 호출)
+  void _handleDrawTouch(Offset touchPoint, Size canvasSize) {
+    if (_activeDrawMode == null) return;
+    final dxf = _screenToDxf(touchPoint, canvasSize);
+    if (dxf == null) return;
+
+    // 스냅 활용 (있으면)
+    final transformPoint = _getTransformPoint(canvasSize);
+    if (transformPoint == null) return;
+    final scale = _getCurrentScale(canvasSize);
+    final cursorTip = SnapOverlayPainter.getCursorTip(touchPoint);
+    final snap = SnapService.findSnap(
+      cursorTip: cursorTip,
+      entities: (_dxfData!['entities'] as List) + _userEntities,
+      hiddenLayers: _hiddenLayers,
+      transformPoint: transformPoint,
+      inverseTransform: transformPoint,
+      scale: scale,
+      zoom: _zoom,
+    );
+
+    setState(() {
+      _touchPoint = touchPoint;
+      _activeSnap = snap.snap;
+      _highlightEntity = snap.entity;
+      if (snap.snap != null) {
+        _cursorTipDxf = Offset(snap.snap!.dxfX, snap.snap!.dxfY);
+      } else {
+        _cursorTipDxf = Offset(dxf.x, dxf.y);
+      }
+    });
+  }
+
+  /// 그리기 모드 확정 (onScaleEnd에서 호출)
+  void _handleDrawConfirm(Size canvasSize) {
+    final dxfPt = _activeSnap != null
+        ? (x: _activeSnap!.dxfX, y: _activeSnap!.dxfY)
+        : (_cursorTipDxf != null ? (x: _cursorTipDxf!.dx, y: _cursorTipDxf!.dy) : null);
+    if (dxfPt == null) {
+      setState(() {
+        _touchPoint = null;
+        _activeSnap = null;
+        _highlightEntity = null;
+        _cursorTipDxf = null;
+      });
+      return;
+    }
+
+    setState(() {
+      switch (_activeDrawMode) {
+        case 'point':
+          final pointEntity = {
+            'type': 'POINT',
+            'x': dxfPt.x,
+            'y': dxfPt.y,
+            'color': _drawColor,
+            'lw': _drawLineWidth,
+            'pdmode': _drawPointStyle,
+            'layer': '_USER',
+          };
+          _userEntities.add(pointEntity);
+          _pushUndo(_UndoAction(_UndoType.addUserEntity, pointEntity));
+          _activeDrawMode = null;
+          break;
+        case 'line':
+          if (_drawFirstPoint == null) {
+            _drawFirstPoint = (dxfX: dxfPt.x, dxfY: dxfPt.y);
+          } else {
+            final lineEntity = {
+              'type': 'LINE',
+              'x1': _drawFirstPoint!.dxfX,
+              'y1': _drawFirstPoint!.dxfY,
+              'x2': dxfPt.x,
+              'y2': dxfPt.y,
+              'color': _drawColor,
+              'lw': _drawLineWidth,
+              'layer': '_USER',
+            };
+            _userEntities.add(lineEntity);
+            _pushUndo(_UndoAction(_UndoType.addUserEntity, lineEntity));
+            _drawFirstPoint = null;
+            _activeDrawMode = null;
+          }
+          break;
+        case 'leader':
+          _leaderPoints.add({'x': dxfPt.x, 'y': dxfPt.y});
+          if (_leaderPoints.length >= 2) {
+            // 지시선 2점 이상이면 텍스트 입력 다이얼로그
+            _showLeaderTextDialog();
+          }
+          break;
+        case 'text':
+          _showTextInputDialog(dxfPt.x, dxfPt.y);
+          break;
+      }
+      _touchPoint = null;
+      _activeSnap = null;
+      _highlightEntity = null;
+      _cursorTipDxf = null;
+    });
+  }
+
+  /// 지시선 텍스트 입력 다이얼로그
+  void _showLeaderTextDialog() {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('지시선 텍스트'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '텍스트 입력 (빈칸 가능)'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() {
+                final leaderEntity = {
+                  'type': 'LEADER',
+                  'points': List<Map<String, double>>.from(_leaderPoints),
+                  'text': controller.text,
+                  'color': _drawColor,
+                  'lw': _drawLineWidth,
+                  'layer': '_USER',
+                };
+                _userEntities.add(leaderEntity);
+                _pushUndo(_UndoAction(_UndoType.addUserEntity, leaderEntity));
+                _leaderPoints = [];
+                _activeDrawMode = null;
+              });
+            },
+            child: const Text('확인'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() {
+                _leaderPoints = [];
+                _activeDrawMode = null;
+              });
+            },
+            child: const Text('취소'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 텍스트 입력 다이얼로그
+  void _showTextInputDialog(double dxfX, double dxfY) {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('텍스트 입력'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '텍스트 내용'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() {
+                if (controller.text.isNotEmpty) {
+                  final textEntity = {
+                    'type': 'TEXT',
+                    'x': dxfX,
+                    'y': dxfY,
+                    'text': controller.text,
+                    'fontSize': _drawTextSize,
+                    'color': _drawColor,
+                    'layer': '_USER',
+                  };
+                  _userEntities.add(textEntity);
+                  _pushUndo(_UndoAction(_UndoType.addUserEntity, textEntity));
+                }
+                _activeDrawMode = null;
+              });
+            },
+            child: const Text('확인'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() => _activeDrawMode = null);
+            },
+            child: const Text('취소'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 엔티티 선택 처리
+  void _handleSelectTouch(Offset touchPoint, Size canvasSize) {
+    final transformPoint = _getTransformPoint(canvasSize);
+    if (transformPoint == null || _dxfData == null) return;
+    final scale = _getCurrentScale(canvasSize);
+    final cursorTip = SnapOverlayPainter.getCursorTip(touchPoint);
+
+    // DXF 엔티티 + 사용자 엔티티 모두 검색
+    final allEntities = [...(_dxfData!['entities'] as List), ..._userEntities];
+    final snap = SnapService.findSnap(
+      cursorTip: cursorTip,
+      entities: allEntities,
+      hiddenLayers: _hiddenLayers,
+      transformPoint: transformPoint,
+      inverseTransform: transformPoint,
+      scale: scale,
+      zoom: _zoom,
+    );
+
+    // snap으로 못 찾은 사용자 LEADER 엔티티도 거리 기반 검색
+    Map<String, dynamic>? found = snap.entity;
+    if (found == null) {
+      final dxf = _screenToDxf(cursorTip, canvasSize);
+      if (dxf != null) {
+        double bestDist = 30.0 / scale; // 화면 30px 톨러런스
+        for (final ue in _userEntities) {
+          if (ue['type'] == 'LEADER') {
+            final pts = ue['points'] as List<Map<String, double>>;
+            for (int i = 0; i < pts.length - 1; i++) {
+              final d = _distToSegment(dxf.x, dxf.y, pts[i]['x']!, pts[i]['y']!, pts[i + 1]['x']!, pts[i + 1]['y']!);
+              if (d < bestDist) {
+                bestDist = d;
+                found = ue;
+              }
+            }
+          } else if (ue['type'] == 'TEXT') {
+            final dx = dxf.x - (ue['x'] as double);
+            final dy = dxf.y - (ue['y'] as double);
+            final d = sqrt(dx * dx + dy * dy);
+            if (d < bestDist) {
+              bestDist = d;
+              found = ue;
+            }
+          }
+        }
+      }
+    }
+
+    setState(() {
+      _touchPoint = touchPoint;
+      _activeSnap = snap.snap;
+      _highlightEntity = found;
+    });
+  }
+
+  /// 점에서 선분까지의 거리
+  double _distToSegment(double px, double py, double x1, double y1, double x2, double y2) {
+    final dx = x2 - x1, dy = y2 - y1;
+    final lenSq = dx * dx + dy * dy;
+    if (lenSq < 1e-10) return sqrt((px - x1) * (px - x1) + (py - y1) * (py - y1));
+    final t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+    final ct = t.clamp(0.0, 1.0);
+    final nx = x1 + ct * dx, ny = y1 + ct * dy;
+    return sqrt((px - nx) * (px - nx) + (py - ny) * (py - ny));
+  }
+
+  /// 엔티티 선택 확정
+  void _handleSelectConfirm() {
+    setState(() {
+      if (_highlightEntity != null) {
+        // 이미 선택된 엔티티인지 확인
+        final idx = _selectedEntities.indexOf(_highlightEntity!);
+        if (idx >= 0) {
+          _selectedEntities.removeAt(idx);
+        } else {
+          _selectedEntities.add(_highlightEntity!);
+        }
+        _showPropertyPanel = _selectedEntities.isNotEmpty;
+      }
+      _touchPoint = null;
+      _activeSnap = null;
+      _highlightEntity = null;
+    });
+  }
+
+  /// Select Similar: 선택된 엔티티와 유사한 속성의 엔티티 일괄 선택
+  void _selectSimilar() {
+    if (_selectedEntities.isEmpty || _dxfData == null) return;
+    final ref = _selectedEntities.first;
+    final refType = ref['type'] as String;
+    final refLayer = ref['layer'] as String?;
+    final refColor = ref['resolvedColor'] as int?;
+
+    final allEntities = _dxfData!['entities'] as List;
+    final similar = <Map<String, dynamic>>[];
+
+    for (final entity in allEntities) {
+      final e = entity as Map<String, dynamic>;
+      if (e['type'] != refType) continue;
+      if (_hiddenLayers.contains(e['layer'])) continue;
+      // 같은 타입 + (같은 레이어 OR 같은 색상)
+      if (e['layer'] == refLayer || e['resolvedColor'] == refColor) {
+        if (!similar.contains(e)) similar.add(e);
+      }
+    }
+
+    setState(() {
+      _selectedEntities.clear();
+      _selectedEntities.addAll(similar);
+      _showPropertyPanel = _selectedEntities.isNotEmpty;
+    });
+
+    ScaffoldMessenger.of(context).removeCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${similar.length}개 유사 엔티티 선택됨'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  /// 선택된 엔티티 색상 변경
+  void _changeSelectedColor(int newColorARGB) {
+    setState(() {
+      for (final entity in _selectedEntities) {
+        final oldColor = entity['resolvedColor'] as int?;
+        _pushUndo(_UndoAction(_UndoType.changeProperty, {
+          'entity': entity, 'field': 'resolvedColor', 'oldValue': oldColor, 'newValue': newColorARGB,
+        }));
+        _pushUndo(_UndoAction(_UndoType.changeProperty, {
+          'entity': entity, 'field': 'color', 'oldValue': entity['color'], 'newValue': newColorARGB,
+        }));
+        entity['resolvedColor'] = newColorARGB;
+        entity['color'] = newColorARGB;
+      }
+      _dxfRepaintVersion++;
+    });
+  }
+
+  /// 선택된 엔티티 선 두께 변경
+  void _changeSelectedLineWidth(double newLw) {
+    setState(() {
+      for (final entity in _selectedEntities) {
+        final oldLw = entity['lw'] as double?;
+        _pushUndo(_UndoAction(_UndoType.changeProperty, {
+          'entity': entity, 'field': 'lw', 'oldValue': oldLw, 'newValue': newLw,
+        }));
+        entity['lw'] = newLw;
+      }
+      _dxfRepaintVersion++;
+    });
+  }
+
+  /// PDMODE 미리보기 위젯
+  Widget _buildPdmodePreview(int pdmode) {
+    return CustomPaint(
+      size: const Size(24, 24),
+      painter: _PdmodePreviewPainter(pdmode),
+    );
+  }
+
+  /// 포인트 스타일 선택 다이얼로그
+  void _showPointStyleDialog() {
+    const styles = [0, 2, 3, 4, 32, 33, 34, 35, 64, 65, 66, 67];
+    const labels = [
+      '점', '+', 'X', '|', '○', '○·', '○+', '○X',
+      '□', '□·', '□+', '□X',
+    ];
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('포인트 스타일 (PDMODE)'),
+        content: SizedBox(
+          width: 280,
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: List.generate(styles.length, (i) {
+              final style = styles[i];
+              final selected = _drawPointStyle == style;
+              return GestureDetector(
+                onTap: () {
+                  Navigator.pop(ctx);
+                  setState(() {
+                    _drawPointStyle = style;
+                    _activeDrawMode = 'point';
+                    _isSelectMode = false;
+                    _isPointMode = false;
+                    _isDimensionMode = false;
+                    _selectedEntities.clear();
+                    _showPropertyPanel = false;
+                  });
+                },
+                child: Container(
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    color: selected ? Colors.cyan.withValues(alpha: 0.3) : Colors.grey[200],
+                    border: Border.all(
+                      color: selected ? Colors.cyan : Colors.grey,
+                      width: selected ? 2 : 1,
+                    ),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      CustomPaint(
+                        size: const Size(28, 28),
+                        painter: _PdmodePreviewPainter(style),
+                      ),
+                      Text(labels[i], style: const TextStyle(fontSize: 9)),
+                    ],
+                  ),
                 ),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 그리기 메뉴 표시
+  void _showDrawMenu() {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.location_on),
+              title: const Text('포인트'),
+              trailing: _buildPdmodePreview(_drawPointStyle),
+              onTap: () {
+                Navigator.pop(ctx);
+                setState(() {
+                  _activeDrawMode = 'point';
+                  _isSelectMode = false;
+                  _isPointMode = false;
+                  _isDimensionMode = false;
+                  _selectedEntities.clear();
+                  _showPropertyPanel = false;
+                });
+              },
+              onLongPress: () {
+                Navigator.pop(ctx);
+                _showPointStyleDialog();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.horizontal_rule),
+              title: const Text('라인'),
+              onTap: () {
+                Navigator.pop(ctx);
+                setState(() {
+                  _activeDrawMode = 'line';
+                  _isSelectMode = false;
+                  _isPointMode = false;
+                  _isDimensionMode = false;
+                  _drawFirstPoint = null;
+                  _selectedEntities.clear();
+                  _showPropertyPanel = false;
+                });
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.call_made),
+              title: const Text('지시선'),
+              onTap: () {
+                Navigator.pop(ctx);
+                setState(() {
+                  _activeDrawMode = 'leader';
+                  _isSelectMode = false;
+                  _isPointMode = false;
+                  _isDimensionMode = false;
+                  _leaderPoints = [];
+                  _selectedEntities.clear();
+                  _showPropertyPanel = false;
+                });
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.text_fields),
+              title: const Text('텍스트'),
+              onTap: () {
+                Navigator.pop(ctx);
+                setState(() {
+                  _activeDrawMode = 'text';
+                  _isSelectMode = false;
+                  _isPointMode = false;
+                  _isDimensionMode = false;
+                  _selectedEntities.clear();
+                  _showPropertyPanel = false;
+                });
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 속성 편집 패널
+  Widget _buildPropertyPanel() {
+    if (!_showPropertyPanel || _selectedEntities.isEmpty) return const SizedBox.shrink();
+
+    final count = _selectedEntities.length;
+    final firstEntity = _selectedEntities.first;
+    final currentColor = Color((firstEntity['resolvedColor'] as int?) ?? 0xFFFFFFFF);
+
+    final colors = [
+      (0xFFFF0000, '빨강'),
+      (0xFF00FF00, '초록'),
+      (0xFF0000FF, '파랑'),
+      (0xFFFFFF00, '노랑'),
+      (0xFFFF00FF, '마젠타'),
+      (0xFF00FFFF, '시안'),
+      (0xFFFFFFFF, '흰색'),
+      (0xFFFF8000, '주황'),
+    ];
+
+    return Positioned(
+      bottom: _bottomBarHeight + 8,
+      left: 8,
+      right: 8,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.grey[850],
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey[600]!),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 상태 메시지
+            Text(
+              '$count개 선택됨 (${firstEntity['type']}${count > 1 ? ' 외' : ''})',
+              style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            // 버튼 행
+            Row(
+              children: [
+                _buildPanelActionBtn(Icons.select_all, '유사 선택', Colors.cyan, _selectSimilar),
+                const SizedBox(width: 6),
+                _buildPanelActionBtn(Icons.delete, '삭제', Colors.red, () {
+                  setState(() {
+                    final entities = _dxfData!['entities'] as List;
+                    for (final e in _selectedEntities) {
+                      final isUser = _userEntities.contains(e);
+                      if (isUser) {
+                        _userEntities.remove(e);
+                      } else {
+                        entities.remove(e);
+                        _dxfRepaintVersion++;
+                      }
+                      _pushUndo(_UndoAction(_UndoType.deleteEntity, {
+                        'entity': e,
+                        'source': isUser ? 'user' : 'dxf',
+                      }));
+                    }
+                    _selectedEntities.clear();
+                    _showPropertyPanel = false;
+                  });
+                }),
                 const Spacer(),
-                Icon(
-                  _showStationPanel ? Icons.expand_less : Icons.expand_more,
-                  color: Colors.white54,
-                  size: 20,
+                _buildPanelActionBtn(Icons.close, '닫기', Colors.white54, () => setState(() {
+                  _selectedEntities.clear();
+                  _showPropertyPanel = false;
+                  _isSelectMode = false;
+                })),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // 색상 선택
+            const Text('색상', style: TextStyle(color: Colors.white70, fontSize: 12)),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 6,
+              children: colors.map((c) {
+                final isSelected = currentColor.toARGB32() == c.$1;
+                return GestureDetector(
+                  onTap: () => _changeSelectedColor(c.$1),
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: Color(c.$1),
+                      border: Border.all(
+                        color: isSelected ? Colors.white : Colors.transparent,
+                        width: 2,
+                      ),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 8),
+            // 선 두께 슬라이더
+            Row(
+              children: [
+                const Text('선 두께', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                const SizedBox(width: 8),
+                Text(
+                  '${((firstEntity['lw'] as double?) ?? 0.5).toStringAsFixed(1)}px',
+                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 12, fontWeight: FontWeight.bold),
                 ),
               ],
             ),
-          ),
-        ),
-        // 바둑판 패널
-        if (_showStationPanel)
-          Container(
-            constraints: const BoxConstraints(maxHeight: 160),
-            padding: const EdgeInsets.all(8),
-            color: Colors.grey[900],
-            child: SingleChildScrollView(
-              child: Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: _baseStationsWithCoords.map((station) {
-                  final isSelected = _selectedStation?.no == station.no;
-                  final label = _shortStationNo(station.no);
-                  return GestureDetector(
-                    onTap: () {
-                      _goToStation(station);
-                      setState(() => _showStationPanel = false);
-                    },
-                    child: Container(
-                      width: 40,
-                      height: 32,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: isSelected ? Colors.cyan : Colors.grey[700],
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        label,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: isSelected ? Colors.black : Colors.white70,
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
+            SliderTheme(
+              data: SliderThemeData(
+                trackHeight: 3,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                activeTrackColor: Colors.cyan,
+                inactiveTrackColor: Colors.grey[700],
+                thumbColor: Colors.cyanAccent,
+              ),
+              child: Slider(
+                value: ((firstEntity['lw'] as double?) ?? 0.5).clamp(0.25, 5.0),
+                min: 0.25,
+                max: 5.0,
+                divisions: 19,
+                onChanged: (v) {
+                  final rounded = (v * 4).round() / 4; // 0.25 단위
+                  _changeSelectedLineWidth(rounded);
+                },
               ),
             ),
-          ),
-      ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPanelActionBtn(IconData icon, String label, Color color, VoidCallback onPressed) {
+    return SizedBox(
+      height: 30,
+      child: TextButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon, color: color, size: 16),
+        label: Text(label, style: TextStyle(color: color, fontSize: 11)),
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+      ),
     );
   }
 
@@ -1714,29 +2735,90 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
           // 슬롯 1: 파일 열기
           _buildToolbarButton(
             icon: Icons.folder_open,
-            label: '열기',
+            label: '',
             onPressed: _openDxfFile,
           ),
-          // 슬롯 2: 레이어
+          // 슬롯 2: GPS 정보 패널 토글
+          _buildToolbarButton(
+            icon: Icons.info_outline,
+            label: '',
+            isActive: _showInfoPanel,
+            onPressed: () {
+              setState(() => _showInfoPanel = !_showInfoPanel);
+            },
+          ),
+          // 슬롯 3: 레이어
           _buildToolbarButton(
             icon: Icons.layers,
-            label: '레이어',
+            label: '',
             isActive: _showLayerPanel,
             badge: _hiddenLayers.isNotEmpty ? '${_hiddenLayers.length}' : null,
             onPressed: () {
               setState(() => _showLayerPanel = !_showLayerPanel);
             },
           ),
-          // 슬롯 3: 치수 측정 (롱프레스 → 타입 선택)
+          // 슬롯 4: 그리기 (롱프레스 → 타입 선택)
+          _buildToolbarButton(
+            icon: _activeDrawMode == 'point' ? Icons.location_on
+                : _activeDrawMode == 'line' ? Icons.horizontal_rule
+                : _activeDrawMode == 'leader' ? Icons.call_made
+                : _activeDrawMode == 'text' ? Icons.text_fields
+                : Icons.edit,
+            label: '',
+            isActive: _activeDrawMode != null,
+            badge: _userEntities.isNotEmpty ? '${_userEntities.length}' : null,
+            onPressed: () {
+              if (_activeDrawMode != null) {
+                setState(() {
+                  _activeDrawMode = null;
+                  _drawFirstPoint = null;
+                  _leaderPoints = [];
+                  _touchPoint = null;
+                  _activeSnap = null;
+                  _highlightEntity = null;
+                  _cursorTipDxf = null;
+                });
+              } else {
+                _showDrawMenu();
+              }
+            },
+            onLongPress: _showDrawMenu,
+          ),
+          // 슬롯 5: 엔티티 선택
+          _buildToolbarButton(
+            icon: Icons.touch_app,
+            label: '',
+            isActive: _isSelectMode,
+            badge: _selectedEntities.isNotEmpty ? '${_selectedEntities.length}' : null,
+            onPressed: () {
+              setState(() {
+                _isSelectMode = !_isSelectMode;
+                if (_isSelectMode) {
+                  _activeDrawMode = null;
+                  _isPointMode = false;
+                  _isDimensionMode = false;
+                } else {
+                  _selectedEntities.clear();
+                  _showPropertyPanel = false;
+                  _touchPoint = null;
+                  _activeSnap = null;
+                  _highlightEntity = null;
+                }
+              });
+            },
+          ),
+          // 슬롯 6: 치수 측정 (롱프레스 → 타입 선택)
           _buildToolbarButton(
             icon: _getDimTypeIcon(_activeDimType),
-            label: _getDimTypeLabel(_activeDimType),
+            label: '',
             isActive: _isDimensionMode,
             onPressed: () {
               setState(() {
                 _isDimensionMode = !_isDimensionMode;
                 if (_isDimensionMode) {
                   _isPointMode = false;
+                  _activeDrawMode = null;
+                  _isSelectMode = false;
                   _touchPoint = null;
                   _activeSnap = null;
                   _highlightEntity = null;
@@ -1757,12 +2839,12 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
             },
             onLongPress: _showDimTypeMenu,
           ),
-          // 슬롯 4: 치수 목록
+          // 슬롯 7: 객체 목록 (치수+포인트+라인+텍스트+지시선)
           _buildToolbarButton(
             icon: Icons.list_alt,
-            label: '목록',
+            label: '',
             isActive: _showDimPanel,
-            badge: _dimResults.isNotEmpty ? '${_dimResults.length}' : null,
+            badge: (_dimResults.length + _userEntities.length) > 0 ? '${_dimResults.length + _userEntities.length}' : null,
             onPressed: () {
               setState(() {
                 _showDimPanel = !_showDimPanel;
@@ -1773,10 +2855,10 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
               });
             },
           ),
-          // 슬롯 5: 치수 설정
+          // 슬롯 8: 치수/그리기 설정
           _buildToolbarButton(
             icon: Icons.palette,
-            label: '설정',
+            label: '',
             isActive: _showDimStylePanel,
             onPressed: () {
               setState(() {
@@ -1926,7 +3008,11 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   });
                   return;
                 }
-                if (_isDimensionMode && _dimPending != null) {
+                if (_activeDrawMode != null) {
+                  _handleDrawTouch(details.localFocalPoint, canvasSize);
+                } else if (_isSelectMode) {
+                  _handleSelectTouch(details.localFocalPoint, canvasSize);
+                } else if (_isDimensionMode && _dimPending != null) {
                   // 치수 배치 단계: 스냅 없이 드래그
                   _handleDimPlacement(details.localFocalPoint, canvasSize);
                 } else if (_isPointMode || _isDimensionMode) {
@@ -1942,7 +3028,11 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                 }
               },
               onScaleUpdate: (details) {
-                if (_isDimensionMode && _dimPending != null) {
+                if (_activeDrawMode != null) {
+                  _handleDrawTouch(details.localFocalPoint, canvasSize);
+                } else if (_isSelectMode) {
+                  _handleSelectTouch(details.localFocalPoint, canvasSize);
+                } else if (_isDimensionMode && _dimPending != null) {
                   // 치수 배치 단계: 드래그로 위치 조절
                   _handleDimPlacement(details.localFocalPoint, canvasSize);
                 } else if (_isPointMode || _isDimensionMode) {
@@ -1996,12 +3086,16 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
               },
               onScaleEnd: (details) {
                 _edgePanDone = false; // 자동패닝 플래그 리셋
-                if (_isDimensionMode) {
+                if (_activeDrawMode != null) {
+                  _handleDrawConfirm(canvasSize);
+                } else if (_isSelectMode) {
+                  _handleSelectConfirm();
+                } else if (_isDimensionMode) {
                   setState(() {
                     if (_dimPending != null) {
                       // 배치 확정 → 결과에 추가
                       final p = _dimPending!;
-                      _dimResults.add(DimensionResult(
+                      final dimResult = DimensionResult(
                         id: DimensionResult.generateId(),
                         type: p.type,
                         x1: p.x1, y1: p.y1,
@@ -2011,7 +3105,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         offsetX: _dimPlacementDxf!.dx,
                         offsetY: _dimPlacementDxf!.dy,
                         style: _dimStyle,
-                      ));
+                      );
+                      _dimResults.add(dimResult);
+                      _pushUndo(_UndoAction(_UndoType.addDimension, dimResult));
                       _dimPending = null;
                       _dimPlacementDxf = null;
                       _dimFirstPoint = null;
@@ -2036,16 +3132,20 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   // 포인트 모드: 스냅 성공 시 포인트 확정 + 측설 진입
                   setState(() {
                     if (_activeSnap != null) {
-                      _confirmedPoints.add((
+                      final pt = (
                         type: _activeSnap!.type,
                         dxfX: _activeSnap!.dxfX,
                         dxfY: _activeSnap!.dxfY,
-                      ));
-                      // GPS 연결 중이면 측설 모드 진입
-                      if (_gnssService.connectionState == GnssConnectionState.connected) {
-                        final snapName = _activeSnap!.entity['text'] as String? ??
-                            'P${_confirmedPoints.length}';
-                        _stakeoutTarget = (dxfX: _activeSnap!.dxfX, dxfY: _activeSnap!.dxfY, name: snapName);
+                      );
+                      _confirmedPoints.add(pt);
+                      _pushUndo(_UndoAction(_UndoType.addPoint, pt));
+                      // 측설 대상으로 설정 (GPS 연결 여부 무관)
+                      final snapName = _activeSnap!.entity['text'] as String? ??
+                          'P${_confirmedPoints.length}';
+                      _stakeoutTarget = (dxfX: _activeSnap!.dxfX, dxfY: _activeSnap!.dxfY, name: snapName);
+                      // GPS 연결 시 GPS위치와 포인트위치가 도면뷰에 가득 차도록 줌
+                      if (_gnssService.position != null) {
+                        _zoomToFitGpsAndPoint(_activeSnap!.dxfX, _activeSnap!.dxfY);
                       }
                     }
                     _isPointMode = false;
@@ -2065,14 +3165,17 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
               },
               child: Stack(
                 children: [
-                  CustomPaint(
-                    size: Size.infinite,
-                    painter: DxfPainter(
-                      entities: _dxfData!['entities'],
-                      bounds: _dxfData!['bounds'],
-                      zoom: _zoom,
-                      offset: _offset,
-                      hiddenLayers: _hiddenLayers,
+                  RepaintBoundary(
+                    child: CustomPaint(
+                      size: Size.infinite,
+                      painter: DxfPainter(
+                        entities: _dxfData!['entities'],
+                        bounds: _dxfData!['bounds'],
+                        zoom: _zoom,
+                        offset: _offset,
+                        hiddenLayers: _hiddenLayers,
+                        repaintVersion: _dxfRepaintVersion,
+                      ),
                     ),
                   ),
                   // 영역 확대 사각형
@@ -2082,6 +3185,25 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                       painter: ZoomWindowPainter(
                         start: _zoomWindowStart!,
                         end: _zoomWindowEnd!,
+                      ),
+                    ),
+                  // 사용자 추가 엔티티 (LINE, LEADER, TEXT)
+                  if (_userEntities.isNotEmpty && _getTransformPoint(canvasSize) != null)
+                    CustomPaint(
+                      size: Size.infinite,
+                      painter: UserEntityPainter(
+                        userEntities: _userEntities,
+                        transformPoint: _getTransformPoint(canvasSize)!,
+                      ),
+                    ),
+                  // 선택된 엔티티 하이라이트
+                  if (_selectedEntities.isNotEmpty && _getTransformPoint(canvasSize) != null)
+                    CustomPaint(
+                      size: Size.infinite,
+                      painter: SelectionHighlightPainter(
+                        selectedEntities: _selectedEntities,
+                        transformPoint: _getTransformPoint(canvasSize)!,
+                        scale: _getCurrentScale(canvasSize),
                       ),
                     ),
                   // 확정된 포인트 표식 (DXF 좌표 기반 → 줌/팬 유지)
@@ -2121,8 +3243,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         selectedDimIndex: _selectedDimIndex,
                       ),
                     ),
-                  // 포인트/치수 모드 커서 + 스냅 오버레이 (배치 단계에서는 숨김)
-                  if ((_isPointMode || _isDimensionMode) && _touchPoint != null && _dimPending == null)
+                  // 포인트/치수/그리기/선택 모드 커서 + 스냅 오버레이 (배치 단계에서는 숨김)
+                  if ((_isPointMode || _isDimensionMode || _activeDrawMode != null || _isSelectMode) && _touchPoint != null && _dimPending == null)
                     CustomPaint(
                       size: Size.infinite,
                       painter: SnapOverlayPainter(
@@ -2133,12 +3255,13 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         scale: _getCurrentScale(canvasSize),
                       ),
                     ),
-                  // 확대 원 (치수/포인트 모드 터치 중, 배치 단계 제외)
-                  if ((_isDimensionMode || _isPointMode) && _touchPoint != null && _cursorTipDxf != null && _dimPending == null)
+                  // 확대 원 (치수/포인트/그리기/선택 모드 터치 중, 배치 단계 제외)
+                  if ((_isDimensionMode || _isPointMode || _activeDrawMode != null || _isSelectMode) && _touchPoint != null && _cursorTipDxf != null && _cursorTipScreen != null && _dimPending == null)
                     CustomPaint(
                       size: Size.infinite,
                       painter: MagnificationPainter(
                         cursorTipDxf: _cursorTipDxf!,
+                        cursorTipScreen: _cursorTipScreen!,
                         entities: _dxfData!['entities'] as List,
                         bounds: _dxfData!['bounds'] as Map<String, dynamic>,
                         hiddenLayers: _hiddenLayers,
@@ -2150,8 +3273,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                 ],
               ),
             ),
-            // GPS 연결 상태 오버레이
-            if (_gnssService.connectionState != GnssConnectionState.disconnected)
+            // GPS 연결 상태 오버레이 (토글)
+            if (_showInfoPanel && _gnssService.connectionState != GnssConnectionState.disconnected)
               Positioned(
                 top: 8,
                 right: 8,
@@ -2187,11 +3310,11 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                       if (_gnssService.position != null) ...[
                         const SizedBox(height: 6),
                         Text(
-                          '중부원점  X ${_gnssService.position!.tmX.toStringAsFixed(3)}',
+                          '중부원점  X ${_gnssService.position!.tmX.toStringAsFixed(4)}',
                           style: const TextStyle(color: Colors.cyanAccent, fontSize: 15, fontWeight: FontWeight.bold),
                         ),
                         Text(
-                          '중부원점  Y ${_gnssService.position!.tmY.toStringAsFixed(3)}',
+                          '중부원점  Y ${_gnssService.position!.tmY.toStringAsFixed(4)}',
                           style: const TextStyle(color: Colors.cyanAccent, fontSize: 15, fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 4),
@@ -2201,7 +3324,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                         ),
                         if (_gnssService.position!.altitude != null)
                           Text(
-                            'H  ${_gnssService.position!.altitude!.toStringAsFixed(2)} m',
+                            'H  ${_gnssService.position!.altitude!.toStringAsFixed(4)} m',
                             style: const TextStyle(color: Colors.white70, fontSize: 12),
                           ),
                       ],
@@ -2222,7 +3345,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                                   ? 'NTRIP 연결중...'
                                   : _ntripService.state == NtripState.error
                                       ? 'NTRIP 오류'
-                                      : 'NTRIP  ${(_ntripService.bytesReceived / 1024).toStringAsFixed(1)}KB',
+                                      : 'NTRIP ${(_ntripService.bytesReceived / 1024).toStringAsFixed(1)}KB→BT${(_gnssService.rtcmBytesSent / 1024).toStringAsFixed(1)}KB${_ntripService.hasReceivedMsm ? " MSM✓" : _ntripService.bytesReceived > 0 ? " MSM✗" : ""}${_gnssService.rtcmFlushErrors > 0 ? " E${_gnssService.rtcmFlushErrors}" : ""}',
                               style: TextStyle(
                                 color: _ntripService.isConnected ? Colors.greenAccent : Colors.orange,
                                 fontSize: 11,
@@ -2235,16 +3358,16 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   ),
                 ),
               ),
-            // 측설 상단 HUD (안테나높이, 포인트명, 거리, 방향)
-            if (_stakeoutTarget != null && _gnssService.position != null)
+            // 상단 HUD (안테나높이, 포인트명, 거리, 방향) — GPS 연결 시만 표시
+            if (_gnssService.connectionState != GnssConnectionState.disconnected)
               Positioned(
                 top: 0,
                 left: 0,
                 right: 0,
                 child: _buildStakeoutTopPanel(),
               ),
-            // 측설 하단 HUD (좌표, 높이, PDOP, 시간지연, 거리)
-            if (_stakeoutTarget != null && _gnssService.position != null)
+            // 하단 HUD (좌표, 높이, PDOP, 시간지연, 거리) — 인포 패널 토글
+            if (_showInfoPanel)
               Positioned(
                 bottom: 0,
                 left: 0,
@@ -2279,6 +3402,36 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   ),
                 ),
               ),
+            // 그리기/선택 모드 안내 배너
+            if (_activeDrawMode != null || _isSelectMode)
+              Positioned(
+                top: 8,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: (_isSelectMode ? Colors.purple : Colors.green).withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Text(
+                      _isSelectMode
+                          ? '선택 모드 - 엔티티를 터치하세요 (${_selectedEntities.length}개 선택)'
+                          : _activeDrawMode == 'point'
+                              ? '포인트 - 위치를 터치하세요'
+                              : _activeDrawMode == 'line'
+                                  ? _drawFirstPoint == null ? '라인 - 시작점을 터치하세요' : '라인 - 끝점을 터치하세요'
+                                  : _activeDrawMode == 'leader'
+                                      ? _leaderPoints.isEmpty ? '지시선 - 화살촉 위치를 터치하세요' : '지시선 - 끝점을 터치하세요 (${_leaderPoints.length}점)'
+                                      : '텍스트 - 위치를 터치하세요',
+                      style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+              ),
+            // 속성 편집 패널
+            _buildPropertyPanel(),
             // 레이어 패널 (하단에서 슬라이드 업)
             if (_showLayerPanel) _buildLayerPanel(),
             // 치수 관리 패널
@@ -2293,14 +3446,16 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
   String _snapTypeName(SnapType type) {
     switch (type) {
-      case SnapType.endpoint:
-        return 'END';
-      case SnapType.center:
-        return 'CEN';
-      case SnapType.intersection:
-        return 'INT';
-      case SnapType.node:
-        return 'NOD';
+      case SnapType.endpoint:      return 'END';
+      case SnapType.midpoint:      return 'MID';
+      case SnapType.center:        return 'CEN';
+      case SnapType.node:          return 'NOD';
+      case SnapType.quadrant:      return 'QUA';
+      case SnapType.intersection:  return 'INT';
+      case SnapType.insertion:     return 'INS';
+      case SnapType.perpendicular: return 'PER';
+      case SnapType.tangent:       return 'TAN';
+      case SnapType.nearest:       return 'NEA';
     }
   }
 
@@ -2308,7 +3463,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     final typeName = _getDimTypeLabel(_activeDimType);
 
     if (_dimPending != null) {
-      return '$typeName 배치 - 드래그하여 위치를 지정하세요';
+      final pendingTypeName = _getDimTypeLabel(_dimPending!.type);
+      return '$pendingTypeName 배치 - 드래그하여 위치를 지정하세요';
     }
 
     if (_activeDimType == DimensionType.angular) {
@@ -2336,18 +3492,35 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     return '$typeName - 두번째 점을 터치하세요';
   }
 
-  /// 측설 상단 HUD — 안테나높이, 포인트명, 거리, N/S E/W 방향
+  /// 측설 상단 HUD — 안테나높이, 측점선택, 포인트명, 거리, N/S E/W 방향
   Widget _buildStakeoutTopPanel() {
-    final pos = _gnssService.position!;
-    final target = _stakeoutTarget!;
-    final dE = target.dxfX - pos.tmX;
-    final dN = target.dxfY - pos.tmY;
-    final distance = sqrt(dE * dE + dN * dN);
+    final pos = _gnssService.position;
+    final target = _stakeoutTarget;
+    final isFixed = _gnssService.fixQuality == 4;
+    final hasData = pos != null && target != null && isFixed;
+    final dE = hasData ? target.dxfX - pos.tmX : 0.0;
+    final dN = hasData ? target.dxfY - pos.tmY : 0.0;
+    final distance = hasData ? sqrt(dE * dE + dN * dN) : 0.0;
 
     // 두 방향 성분 (타겟까지 남은 거리의 N/S, E/W)
     final nsLabel = dN >= 0 ? '북(N)' : '남(S)';
     final ewLabel = dE >= 0 ? '동(E)' : '서(W)';
 
+    // Fix 상태 텍스트
+    String fixStatusText() {
+      if (pos == null) return 'GPS 미연결';
+      switch (_gnssService.fixQuality) {
+        case 4: return '';
+        case 5: return 'Float - 픽스 대기중...';
+        case 2: return 'DGPS - 픽스 대기중...';
+        case 1: return '단독측위 - 픽스 대기중...';
+        default: return '위성 탐색중...';
+      }
+    }
+
+    const dp = 4;
+    const labelStyle = TextStyle(color: Colors.black, fontSize: 18, fontWeight: FontWeight.bold);
+    const valueStyle = TextStyle(color: Colors.black, fontSize: 18);
     return SafeArea(
       bottom: false,
       child: Container(
@@ -2356,49 +3529,198 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // 1줄: 안테나높이 + 포인트명
+            // 1줄: 안테나높이 + 측점선택 + 포인트명
             Row(
               children: [
                 Text(
-                  '안테나높이 ${_antennaHeight.toStringAsFixed(4)}M',
-                  style: const TextStyle(
-                    color: Colors.black, fontSize: 14, fontWeight: FontWeight.bold,
-                  ),
+                  '안테나높이 ${_antennaHeight.toStringAsFixed(dp)}M',
+                  style: labelStyle,
                 ),
+                if (_stationsWithCoords.isNotEmpty) ...[
+                  const SizedBox(width: 12),
+                  _buildStationDropdown(),
+                ],
                 const Spacer(),
                 Text(
-                  target.name,
-                  style: const TextStyle(
-                    color: Colors.black, fontSize: 14, fontWeight: FontWeight.bold,
-                  ),
+                  target?.name ?? '포인트 미선택',
+                  style: labelStyle,
                 ),
               ],
             ),
+            // GPS 높이 표시 (해발고도 + 안테나높이)
+            if (pos != null && pos.altitude != null)
+              Row(
+                children: [
+                  Text(
+                    '지반고 ${(pos.altitude! + _antennaHeight).toStringAsFixed(3)}m',
+                    style: valueStyle,
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    '(해발 ${pos.altitude!.toStringAsFixed(3)}m + 안테나 ${_antennaHeight}m)',
+                    style: TextStyle(color: Colors.black54, fontSize: 13),
+                  ),
+                ],
+              ),
             const SizedBox(height: 2),
-            // 2줄: 거리 + 방향 성분 2개
-            Row(
+            // 2줄: 포인트+Fix → 거리+방향, 포인트+미Fix → 상태, GPS만 → 좌표, 없음 → 미연결
+            if (target != null && hasData) Row(
               children: [
                 Text(
-                  '거리 ${distance.toStringAsFixed(4)}',
-                  style: const TextStyle(
-                    color: Colors.black, fontSize: 14, fontWeight: FontWeight.bold,
-                  ),
+                  '거리 ${distance.toStringAsFixed(dp)}',
+                  style: labelStyle,
                 ),
                 const SizedBox(width: 16),
                 Text(
-                  '$nsLabel ${dN.abs().toStringAsFixed(4)}',
-                  style: const TextStyle(
-                    color: Colors.black, fontSize: 14, fontWeight: FontWeight.bold,
-                  ),
+                  '$nsLabel ${dN.abs().toStringAsFixed(dp)}',
+                  style: valueStyle,
                 ),
                 const SizedBox(width: 16),
                 Text(
-                  '$ewLabel ${dE.abs().toStringAsFixed(4)}',
-                  style: const TextStyle(
-                    color: Colors.black, fontSize: 14, fontWeight: FontWeight.bold,
-                  ),
+                  '$ewLabel ${dE.abs().toStringAsFixed(dp)}',
+                  style: valueStyle,
                 ),
               ],
+            ) else if (target != null && !isFixed) Row(
+              children: [
+                Text(
+                  fixStatusText(),
+                  style: TextStyle(color: Colors.red, fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ) else if (pos != null && isFixed) Row(
+              children: [
+                Text(
+                  'N ${pos.tmY.toStringAsFixed(dp)}',
+                  style: valueStyle,
+                ),
+                const SizedBox(width: 16),
+                Text(
+                  'E ${pos.tmX.toStringAsFixed(dp)}',
+                  style: valueStyle,
+                ),
+              ],
+            ) else Row(
+              children: [
+                Text(
+                  fixStatusText(),
+                  style: TextStyle(color: pos != null ? Colors.orange : Colors.grey, fontSize: 18),
+                ),
+              ],
+            ),
+            // 3줄: 위성수, Fix상태, PDOP (GPS 연결 시 항상 표시)
+            if (_gnssService.connectionState == GnssConnectionState.connected)
+              Row(
+                children: [
+                  Icon(
+                    Icons.satellite_alt,
+                    size: 16,
+                    color: isFixed ? Colors.green : Colors.orange,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${_gnssService.satellites}위성',
+                    style: TextStyle(fontSize: 14, color: Colors.black87),
+                  ),
+                  const SizedBox(width: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: isFixed ? Colors.green : (_gnssService.fixQuality == 5 ? Colors.orange : Colors.red),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      isFixed ? 'RTK Fix' : (_gnssService.fixQuality == 5 ? 'Float' : _gnssService.fixQuality == 2 ? 'DGPS' : _gnssService.fixQuality >= 1 ? 'GPS' : 'No Fix'),
+                      style: const TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  if (_gnssService.pdop != null) ...[
+                    const SizedBox(width: 12),
+                    Text(
+                      'PDOP ${_gnssService.pdop!.toStringAsFixed(1)}',
+                      style: TextStyle(fontSize: 14, color: _gnssService.pdop! <= 2.0 ? Colors.green : _gnssService.pdop! <= 4.0 ? Colors.orange : Colors.red),
+                    ),
+                  ],
+                  if (pos?.hdop != null) ...[
+                    const SizedBox(width: 12),
+                    Text(
+                      'HDOP ${pos!.hdop!.toStringAsFixed(1)}',
+                      style: TextStyle(fontSize: 14, color: pos.hdop! <= 1.5 ? Colors.green : pos.hdop! <= 3.0 ? Colors.orange : Colors.red),
+                    ),
+                  ],
+                ],
+              ),
+            // 측점 패널 (펼침 시)
+            if (_showStationPanel)
+              Container(
+                constraints: const BoxConstraints(maxHeight: 160),
+                padding: const EdgeInsets.only(top: 6),
+                child: SingleChildScrollView(
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: _baseStationsWithCoords.map((station) {
+                      final isSelected = _selectedStation?.no == station.no;
+                      final label = _shortStationNo(station.no);
+                      return GestureDetector(
+                        onTap: () {
+                          _goToStation(station);
+                          setState(() => _showStationPanel = false);
+                        },
+                        child: Container(
+                          width: 40,
+                          height: 32,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: isSelected ? Colors.cyan : Colors.grey[300],
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            label,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: isSelected ? Colors.white : Colors.black87,
+                              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 측점 드롭다운 버튼 (상단 HUD 내)
+  Widget _buildStationDropdown() {
+    return GestureDetector(
+      onTap: () => setState(() => _showStationPanel = !_showStationPanel),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        decoration: BoxDecoration(
+          color: Colors.grey[200],
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: Colors.grey[400]!),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.location_on, color: Colors.cyan, size: 16),
+            const SizedBox(width: 4),
+            Text(
+              _selectedStation != null
+                  ? _shortStationNo(_selectedStation!.no)
+                  : '측점',
+              style: const TextStyle(color: Colors.black87, fontSize: 13, fontWeight: FontWeight.bold),
+            ),
+            Icon(
+              _showStationPanel ? Icons.expand_less : Icons.expand_more,
+              color: Colors.black54,
+              size: 18,
             ),
           ],
         ),
@@ -2406,20 +3728,26 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     );
   }
 
-  /// 측설 하단 HUD — GPS 좌표, 높이, PDOP, 시간지연, 거리
+  /// 하단 HUD — GPS 좌표, 높이, PDOP, 시간지연, 거리
   Widget _buildStakeoutBottomPanel() {
-    final pos = _gnssService.position!;
-    final target = _stakeoutTarget!;
-    final dE = target.dxfX - pos.tmX;
-    final dN = target.dxfY - pos.tmY;
-    final distance = sqrt(dE * dE + dN * dN);
+    final pos = _gnssService.position;
+    final target = _stakeoutTarget;
+    final hasPos = pos != null;
+    final hasData = hasPos && target != null;
+    final dE = hasData ? target.dxfX - pos.tmX : 0.0;
+    final dN = hasData ? target.dxfY - pos.tmY : 0.0;
+    final distance = hasData ? sqrt(dE * dE + dN * dN) : 0.0;
+
+    const dp = 4;
+    final dash = '-.----';
+    const s = TextStyle(color: Colors.black, fontSize: 13);
 
     // 현재 GPS TM 좌표 (Northing, Easting)
-    final northing = pos.tmY;
-    final easting = pos.tmX;
-    final altitude = pos.altitude ?? 0.0;
-    final pdop = _gnssService.pdop ?? 0.0;
-    final diffAge = pos.diffAge ?? 0.0;
+    final northing = pos?.tmY;
+    final easting = pos?.tmX;
+    final altitude = pos?.altitude;
+    final pdop = _gnssService.pdop;
+    final diffAge = pos?.diffAge;
 
     return Container(
       color: Colors.white,
@@ -2433,13 +3761,13 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
             Row(
               children: [
                 Text(
-                  '북(N) ${northing.toStringAsFixed(4)}',
-                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                  '북(N) ${northing?.toStringAsFixed(dp) ?? dash}',
+                  style: s,
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  '동(E) ${easting.toStringAsFixed(4)}',
-                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                  '동(E) ${easting?.toStringAsFixed(dp) ?? dash}',
+                  style: s,
                 ),
               ],
             ),
@@ -2448,23 +3776,23 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
             Row(
               children: [
                 Text(
-                  '높이 ${altitude.toStringAsFixed(4)}',
-                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                  '높이 ${altitude?.toStringAsFixed(dp) ?? dash}',
+                  style: s,
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  'PDOP ${pdop.toStringAsFixed(3)}',
-                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                  'PDOP ${pdop?.toStringAsFixed(dp) ?? dash}',
+                  style: s,
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  '시간지연 ${diffAge.toStringAsFixed(1)}',
-                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                  '시간지연 ${diffAge?.toStringAsFixed(dp) ?? dash}',
+                  style: s,
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  '거리 ${distance.toStringAsFixed(4)}',
-                  style: const TextStyle(color: Colors.black, fontSize: 13),
+                  '거리 ${hasData ? distance.toStringAsFixed(dp) : dash}',
+                  style: s,
                 ),
               ],
             ),
@@ -2634,8 +3962,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     );
   }
 
-  /// 치수 관리 패널
+  /// 객체 관리 패널 (치수 + 사용자 엔티티)
   Widget _buildDimListPanel() {
+    final totalCount = _dimResults.length + _userEntities.length;
     return Positioned(
       left: 0,
       right: 0,
@@ -2666,10 +3995,10 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.straighten, color: Colors.orange, size: 20),
+                  const Icon(Icons.layers, color: Colors.orange, size: 20),
                   const SizedBox(width: 8),
                   Text(
-                    '치수 목록 (${_dimResults.length}개)',
+                    '객체 목록 ($totalCount개)',
                     style: const TextStyle(
                       color: Colors.white,
                       fontSize: 14,
@@ -2677,9 +4006,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                     ),
                   ),
                   const Spacer(),
-                  if (_dimResults.isNotEmpty)
+                  if (totalCount > 0)
                     TextButton(
-                      onPressed: _deleteAllDimensions,
+                      onPressed: _deleteAllUserObjects,
                       style: TextButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 8),
                         minimumSize: Size.zero,
@@ -2695,70 +4024,257 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                 ],
               ),
             ),
-            // 치수 리스트
+            // 객체 리스트
             Flexible(
-              child: _dimResults.isEmpty
+              child: totalCount == 0
                   ? const Padding(
                       padding: EdgeInsets.all(24),
-                      child: Text('치수 없음', style: TextStyle(color: Colors.white54)),
+                      child: Text('객체 없음', style: TextStyle(color: Colors.white54)),
                     )
-                  : ListView.builder(
+                  : ListView(
                       shrinkWrap: true,
                       padding: const EdgeInsets.symmetric(vertical: 4),
-                      itemCount: _dimResults.length,
-                      itemBuilder: (context, index) {
-                        final dim = _dimResults[index];
-                        final isSelected = _selectedDimIndex == index;
-                        return InkWell(
-                          onTap: () {
-                            setState(() {
-                              _selectedDimIndex = isSelected ? null : index;
-                            });
-                          },
-                          child: Container(
-                            color: isSelected ? Colors.cyan.withValues(alpha: 0.15) : null,
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  _getDimTypeIcon(dim.type),
-                                  size: 18,
-                                  color: dim.style.color,
-                                ),
-                                const SizedBox(width: 10),
-                                Text(
-                                  _getDimTypeLabel(dim.type),
-                                  style: TextStyle(
-                                    color: Colors.grey[400],
-                                    fontSize: 11,
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    dim.type == DimensionType.angular
-                                        ? '${dim.value.toStringAsFixed(dim.style.decimalPlaces)}\u00B0'
-                                        : dim.value.toStringAsFixed(dim.style.decimalPlaces),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                ),
-                                GestureDetector(
-                                  onTap: () => _deleteDimension(index),
-                                  child: Icon(Icons.delete_outline, size: 18, color: Colors.red[300]),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
+                      children: [
+                        // 치수 항목들
+                        for (int i = 0; i < _dimResults.length; i++)
+                          _buildDimListItem(i),
+                        // 사용자 엔티티 항목들
+                        for (int i = 0; i < _userEntities.length; i++)
+                          _buildUserEntityListItem(i),
+                      ],
                     ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildDimListItem(int index) {
+    final dim = _dimResults[index];
+    final isSelected = _selectedDimIndex == index;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        InkWell(
+          onTap: () {
+            setState(() {
+              _selectedDimIndex = isSelected ? null : index;
+            });
+          },
+          child: Container(
+            color: isSelected ? Colors.cyan.withValues(alpha: 0.15) : null,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                Icon(
+                  _getDimTypeIcon(dim.type),
+                  size: 18,
+                  color: dim.style.color,
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  _getDimTypeLabel(dim.type),
+                  style: TextStyle(color: Colors.grey[400], fontSize: 11),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    dim.type == DimensionType.angular
+                        ? '${dim.value.toStringAsFixed(dim.style.decimalPlaces)}\u00B0'
+                        : dim.value.toStringAsFixed(dim.style.decimalPlaces),
+                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () => _deleteDimension(index),
+                  child: Icon(Icons.delete_outline, size: 18, color: Colors.red[300]),
+                ),
+              ],
+            ),
+          ),
+        ),
+        // 선택된 치수: 보조선 크기 조절 슬라이더
+        if (isSelected)
+          Container(
+            color: Colors.grey[850],
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Text('보조선', style: TextStyle(color: Colors.grey[400], fontSize: 11)),
+                    Expanded(
+                      child: Slider(
+                        value: dim.style.extensionOvershoot,
+                        min: 0,
+                        max: 30,
+                        onChanged: (v) {
+                          setState(() {
+                            _dimResults[index] = dim.copyWith(
+                              style: dim.style.copyWith(extensionOvershoot: v),
+                            );
+                          });
+                        },
+                      ),
+                    ),
+                    SizedBox(
+                      width: 32,
+                      child: Text(
+                        dim.style.extensionOvershoot.toStringAsFixed(0),
+                        style: const TextStyle(color: Colors.white70, fontSize: 11),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Text('간격', style: TextStyle(color: Colors.grey[400], fontSize: 11)),
+                    Expanded(
+                      child: Slider(
+                        value: dim.style.extensionGap,
+                        min: 0,
+                        max: 20,
+                        onChanged: (v) {
+                          setState(() {
+                            _dimResults[index] = dim.copyWith(
+                              style: dim.style.copyWith(extensionGap: v),
+                            );
+                          });
+                        },
+                      ),
+                    ),
+                    SizedBox(
+                      width: 32,
+                      child: Text(
+                        dim.style.extensionGap.toStringAsFixed(0),
+                        style: const TextStyle(color: Colors.white70, fontSize: 11),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildUserEntityListItem(int index) {
+    final entity = _userEntities[index];
+    final type = entity['type'] as String;
+    final isSelected = _selectedEntities.contains(entity);
+
+    IconData icon;
+    String label;
+    String detail;
+    Color color;
+
+    switch (type) {
+      case 'POINT':
+        icon = Icons.location_on;
+        label = '포인트';
+        detail = '(${(entity['x'] as double).toStringAsFixed(2)}, ${(entity['y'] as double).toStringAsFixed(2)})';
+        color = Color(entity['color'] as int);
+        break;
+      case 'LINE':
+        icon = Icons.horizontal_rule;
+        label = '라인';
+        detail = '(${(entity['x1'] as double).toStringAsFixed(1)},${(entity['y1'] as double).toStringAsFixed(1)})→(${(entity['x2'] as double).toStringAsFixed(1)},${(entity['y2'] as double).toStringAsFixed(1)})';
+        color = Color(entity['color'] as int);
+        break;
+      case 'TEXT':
+        icon = Icons.text_fields;
+        label = '텍스트';
+        detail = entity['text'] as String? ?? '';
+        color = Color(entity['color'] as int);
+        break;
+      case 'LEADER':
+        icon = Icons.call_made;
+        label = '지시선';
+        detail = entity['text'] as String? ?? '';
+        color = Color(entity['color'] as int);
+        break;
+      default:
+        icon = Icons.help_outline;
+        label = type;
+        detail = '';
+        color = Colors.white;
+    }
+
+    return InkWell(
+      onTap: () {
+        setState(() {
+          if (isSelected) {
+            _selectedEntities.remove(entity);
+          } else {
+            _selectedEntities.clear();
+            _selectedEntities.add(entity);
+            _selectedDimIndex = null;
+          }
+          _showPropertyPanel = _selectedEntities.isNotEmpty;
+        });
+      },
+      child: Container(
+        color: isSelected ? Colors.cyan.withValues(alpha: 0.15) : null,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: color),
+            const SizedBox(width: 10),
+            Text(label, style: TextStyle(color: Colors.grey[400], fontSize: 11)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                detail,
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            GestureDetector(
+              onTap: () => _deleteUserEntity(index),
+              child: Icon(Icons.delete_outline, size: 18, color: Colors.red[300]),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _deleteUserEntity(int index) {
+    setState(() {
+      final entity = _userEntities[index];
+      _selectedEntities.remove(entity);
+      _userEntities.removeAt(index);
+      if (_selectedEntities.isEmpty) _showPropertyPanel = false;
+    });
+  }
+
+  void _deleteAllUserObjects() {
+    final totalCount = _dimResults.length + _userEntities.length;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('모든 객체 삭제'),
+        content: Text('$totalCount개의 객체를 모두 삭제하시겠습니까?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('취소')),
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _dimResults.clear();
+                _selectedDimIndex = null;
+                _userEntities.clear();
+                _selectedEntities.clear();
+                _showPropertyPanel = false;
+              });
+              Navigator.pop(ctx);
+            },
+            child: const Text('삭제', style: TextStyle(color: Colors.red)),
+          ),
+        ],
       ),
     );
   }
@@ -2891,6 +4407,23 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                 ],
               ),
             ),
+            // 구분선
+            Divider(color: Colors.grey[700], height: 1),
+            // 측설 자동 줌 배율 설정
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.zoom_in, color: Colors.cyan, size: 18),
+                  const SizedBox(width: 6),
+                  const Text(
+                    '측설 자동 줌 배율',
+                    style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ),
+            ..._buildAutoZoomSettings(),
             const SizedBox(height: 8),
           ],
         ),
@@ -2967,6 +4500,199 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       );
     }).toList();
   }
+
+  /// 측설 자동 줌 배율 설정 위젯 목록
+  List<Widget> _buildAutoZoomSettings() {
+    final labels = ['10m', '5m', '2m', '1m', '50cm', '30cm', '10cm', '5cm'];
+    return List.generate(_autoZoomLevels.length, (i) {
+      final level = _autoZoomLevels[i];
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+        child: Row(
+          children: [
+            GestureDetector(
+              onTap: () => _enterZoomPreview(level.$2, labels[i]),
+              child: SizedBox(
+                width: 48,
+                child: Text(
+                  labels[i],
+                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 12, decoration: TextDecoration.underline),
+                ),
+              ),
+            ),
+            Expanded(
+              child: Slider(
+                value: level.$2,
+                min: 5,
+                max: 1500,
+                divisions: 299,
+                onChanged: (v) {
+                  setState(() {
+                    _autoZoomLevels[i] = (level.$1, (v / 5).round() * 5.0);
+                  });
+                  _saveAutoZoomLevels();
+                },
+              ),
+            ),
+            SizedBox(
+              width: 48,
+              child: GestureDetector(
+                onTap: () => _editAutoZoomValue(i),
+                child: Text(
+                  'x${level.$2.toInt()}',
+                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                  textAlign: TextAlign.right,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    });
+  }
+
+  /// 줌 배율 프리뷰 진입
+  void _enterZoomPreview(double zoom, String label) {
+    // 기준점: 마지막 확정 포인트 또는 측설 타겟
+    double? cx, cy;
+    if (_confirmedPoints.isNotEmpty) {
+      cx = _confirmedPoints.last.dxfX;
+      cy = _confirmedPoints.last.dxfY;
+    } else if (_stakeoutTarget != null) {
+      cx = _stakeoutTarget!.dxfX;
+      cy = _stakeoutTarget!.dxfY;
+    }
+
+    // 기준점 없으면 현재 뷰 중앙 유지
+    final savedZoom = _zoom;
+    final savedOffset = _offset;
+
+    setState(() {
+      _zoomPreviewMode = true;
+      _previewZoom = zoom;
+      _previewLabel = label;
+      _showDimStylePanel = false;
+      _zoom = zoom;
+    });
+
+    // 기준점이 있으면 중앙 정렬
+    if (cx != null && cy != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _centerOnDxfPoint(cx!, cy!, targetZoom: zoom);
+      });
+    }
+
+    // 복원용 저장
+    _savedZoom = savedZoom;
+    _savedOffset = savedOffset;
+  }
+
+  double _savedZoom = 1.0;
+  Offset _savedOffset = Offset.zero;
+
+  /// 줌 배율 프리뷰 종료
+  void _exitZoomPreview() {
+    setState(() {
+      _zoomPreviewMode = false;
+      _zoom = _savedZoom;
+      _offset = _savedOffset;
+      _showDimStylePanel = true;
+    });
+  }
+
+  /// 자동 줌 값 직접 입력
+  void _editAutoZoomValue(int index) {
+    final level = _autoZoomLevels[index];
+    final labels = ['10m', '5m', '2m', '1m', '50cm', '30cm', '10cm', '5cm'];
+    final controller = TextEditingController(text: level.$2.toInt().toString());
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('${labels[index]} 이내 줌 배율'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '줌 배율',
+            suffixText: 'x',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('취소'),
+          ),
+          TextButton(
+            onPressed: () {
+              final v = double.tryParse(controller.text);
+              if (v != null && v >= 5 && v <= 1500) {
+                setState(() => _autoZoomLevels[index] = (level.$1, v));
+                _saveAutoZoomLevels();
+              }
+              Navigator.pop(ctx);
+            },
+            child: const Text('확인'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// PDMODE 프리뷰 페인터
+class _PdmodePreviewPainter extends CustomPainter {
+  final int pdmode;
+  _PdmodePreviewPainter(this.pdmode);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    final r = size.width * 0.35;
+    final paint = Paint()
+      ..color = Colors.black
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+
+    final base = pdmode & 7; // 하위 3비트: 기본 형상
+    final shape = pdmode & ~7; // 상위 비트: 외형 (32=circle, 64=square)
+
+    // 외형
+    if (shape & 32 != 0) {
+      canvas.drawCircle(Offset(cx, cy), r, paint);
+    }
+    if (shape & 64 != 0) {
+      canvas.drawRect(Rect.fromCenter(center: Offset(cx, cy), width: r * 2, height: r * 2), paint);
+    }
+
+    // 기본 형상
+    final s = r * 0.7;
+    switch (base) {
+      case 0: // dot
+        canvas.drawCircle(Offset(cx, cy), 2, paint..style = PaintingStyle.fill);
+        paint.style = PaintingStyle.stroke;
+        break;
+      case 2: // + cross
+        canvas.drawLine(Offset(cx - s, cy), Offset(cx + s, cy), paint);
+        canvas.drawLine(Offset(cx, cy - s), Offset(cx, cy + s), paint);
+        break;
+      case 3: // X cross
+        canvas.drawLine(Offset(cx - s, cy - s), Offset(cx + s, cy + s), paint);
+        canvas.drawLine(Offset(cx - s, cy + s), Offset(cx + s, cy - s), paint);
+        break;
+      case 4: // short line up
+        canvas.drawLine(Offset(cx, cy), Offset(cx, cy - s), paint);
+        break;
+      case 1: // dot (same as 0 for user entities)
+        canvas.drawCircle(Offset(cx, cy), 2, paint..style = PaintingStyle.fill);
+        paint.style = PaintingStyle.stroke;
+        break;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PdmodePreviewPainter old) => old.pdmode != pdmode;
 }
 
 /// 영역 확대 사각형을 그리는 Painter

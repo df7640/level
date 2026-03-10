@@ -1,12 +1,18 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 
-/// 스냅 유형 (우선순위: intersection > endpoint > center > node)
+/// 스냅 유형 (AutoCAD OSNAP 전체 지원)
 enum SnapType {
-  intersection, // 교차 스냅 (엔티티 간 교차점) - 최우선
-  endpoint, // 엔드포인트 스냅 (선/폴리라인 끝점)
-  center, // 센터 스냅 (원/호의 중심)
-  node, // 노드 스냅 (POINT 엔티티)
+  endpoint,      // 끝점 (선/폴리라인/호 끝점) — ■ 채움 사각형
+  midpoint,      // 중점 (선/폴리라인 세그먼트/호 중점) — △ 삼각형
+  center,        // 중심 (원/호 중심) — ○ 안에 십자
+  node,          // 노드 (POINT 엔티티) — ○ 안에 X
+  quadrant,      // 사분점 (원/호 0°/90°/180°/270°) — ◇ 마름모
+  intersection,  // 교차점 (엔티티 간 교차) — X
+  insertion,     // 삽입점 (TEXT/INSERT 기준점) — ⊞ 사각+십자
+  perpendicular, // 수직점 (엔티티에 수선의 발) — ⊥
+  tangent,       // 접선점 (원/호 접점) — ○ 위 선
+  nearest,       // 최근점 (엔티티 위 최근접점) — ⌛ 모래시계
 }
 
 /// 스냅 결과
@@ -66,57 +72,51 @@ class SnapOverlayPainter extends CustomPainter {
     }
   }
 
-  /// 커서 그리기: 터치 위치에서 11시 방향으로 3cm 라인 + 화살촉
+  /// 커서 그리기: 11시 방향 화살촉 → 라인 → 터치점에 큰 흰색 원
   void _drawCursor(Canvas canvas, Offset touch) {
-    // 3cm를 픽셀로 변환 (모바일 기준 약 160dpi → 1cm ≈ 63px)
-    // 하지만 실제로는 MediaQuery에서 가져와야 정확. 일단 약 38px/cm (96dpi) 기준
+    const double circleRadius = 20.0;
+    final pen = Paint()
+      ..color = Colors.white
+      ..strokeWidth = 1.0
+      ..style = PaintingStyle.stroke;
+
+    // 터치점: 흰색 채움 원 + 테두리 + 외곽 테두리(옵셋 2px)
+    canvas.drawCircle(touch, circleRadius,
+      Paint()..color = Colors.white..style = PaintingStyle.fill);
+    canvas.drawCircle(touch, circleRadius, pen);
+    canvas.drawCircle(touch, circleRadius + 2, pen);
+
+    // 11시 방향 라인 (1px)
     const double pixelsPerCm = 38.0;
     final lineLength = _cursorLineLengthCm * pixelsPerCm;
-
-    // 11시 방향 = 150도 (시계 반대, 수학 각도 기준)
     final angleRad = _cursorAngleDeg * pi / 180.0;
     final dx = cos(angleRad) * lineLength;
-    final dy = -sin(angleRad) * lineLength; // Y축 반전 (화면 좌표)
+    final dy = -sin(angleRad) * lineLength;
+    final tip = Offset(touch.dx + dx, touch.dy + dy);
 
-    final tipPoint = Offset(touch.dx + dx, touch.dy + dy);
-
-    // 커서 라인
-    final cursorPaint = Paint()
-      ..color = Colors.yellowAccent
-      ..strokeWidth = 1.0
-      ..style = PaintingStyle.stroke;
-
-    canvas.drawLine(touch, tipPoint, cursorPaint);
-
-    // 화살촉 (tip → 양쪽으로 벌어진 두 선)
-    final arrowAngle = atan2(dy, dx); // 라인 방향 각도
-    const arrowSpread = 25.0 * pi / 180.0; // 화살촉 벌림 각도
-
-    final arrow1 = Offset(
-      tipPoint.dx - _arrowHeadSize * cos(arrowAngle - arrowSpread),
-      tipPoint.dy - _arrowHeadSize * sin(arrowAngle - arrowSpread),
+    // 외곽 원 테두리에서 시작
+    final startR = circleRadius + 2;
+    final lineStart = Offset(
+      touch.dx + cos(angleRad) * startR,
+      touch.dy - sin(angleRad) * startR,
     );
-    final arrow2 = Offset(
-      tipPoint.dx - _arrowHeadSize * cos(arrowAngle + arrowSpread),
-      tipPoint.dy - _arrowHeadSize * sin(arrowAngle + arrowSpread),
+    canvas.drawLine(lineStart, tip, pen);
+
+    // 화살촉 (라인만, 채움 없음, 좁은 각도, 크기 2배)
+    const double headLen = 28.0;
+    const double headAngle = 15.0 * pi / 180.0;
+    final backAngle = atan2(-dy, -dx);
+
+    final left = Offset(
+      tip.dx + headLen * cos(backAngle + headAngle),
+      tip.dy + headLen * sin(backAngle + headAngle),
     );
-
-    final arrowPaint = Paint()
-      ..color = Colors.yellowAccent
-      ..strokeWidth = 1.0
-      ..style = PaintingStyle.stroke;
-
-    canvas.drawLine(tipPoint, arrow1, arrowPaint);
-    canvas.drawLine(tipPoint, arrow2, arrowPaint);
-
-    // 터치 위치에 작은 점
-    canvas.drawCircle(
-      touch,
-      3.0,
-      Paint()
-        ..color = Colors.yellowAccent
-        ..style = PaintingStyle.fill,
+    final right = Offset(
+      tip.dx + headLen * cos(backAngle - headAngle),
+      tip.dy + headLen * sin(backAngle - headAngle),
     );
+    canvas.drawLine(tip, left, pen);
+    canvas.drawLine(tip, right, pen);
   }
 
   /// 커서 팁(화살촉 끝) 위치 계산 (외부에서 사용)
@@ -249,87 +249,121 @@ class SnapOverlayPainter extends CustomPainter {
 
     switch (snap.type) {
       case SnapType.endpoint:
-        // AutoCAD 엔드포인트: 채워진 사각형
+        // 끝점: 채워진 사각형 ■
         markerPaint.color = Colors.greenAccent;
         final rect = Rect.fromCenter(center: pos, width: s, height: s);
-        canvas.drawRect(
-          rect,
-          Paint()
-            ..color = Colors.greenAccent
-            ..style = PaintingStyle.fill,
-        );
+        canvas.drawRect(rect, Paint()..color = Colors.greenAccent..style = PaintingStyle.fill);
         canvas.drawRect(rect, markerPaint);
         break;
 
+      case SnapType.midpoint:
+        // 중점: 삼각형 △
+        markerPaint.color = Colors.greenAccent;
+        final halfS = s / 2;
+        final path = Path()
+          ..moveTo(pos.dx, pos.dy - halfS)
+          ..lineTo(pos.dx - halfS, pos.dy + halfS)
+          ..lineTo(pos.dx + halfS, pos.dy + halfS)
+          ..close();
+        canvas.drawPath(path, markerPaint);
+        break;
+
       case SnapType.center:
-        // AutoCAD 센터: 원 안에 십자
+        // 중심: 원 안에 십자 ⊕
         markerPaint.color = const Color(0xFFFF40FF);
         final halfS = s / 2;
         canvas.drawCircle(pos, halfS, markerPaint);
-        // 십자
-        canvas.drawLine(
-          Offset(pos.dx - halfS, pos.dy),
-          Offset(pos.dx + halfS, pos.dy),
-          markerPaint,
-        );
-        canvas.drawLine(
-          Offset(pos.dx, pos.dy - halfS),
-          Offset(pos.dx, pos.dy + halfS),
-          markerPaint,
-        );
-        break;
-
-      case SnapType.intersection:
-        // AutoCAD 교차: X 표식
-        markerPaint.color = Colors.yellowAccent;
-        final halfS = s / 2;
-        canvas.drawLine(
-          Offset(pos.dx - halfS, pos.dy - halfS),
-          Offset(pos.dx + halfS, pos.dy + halfS),
-          markerPaint,
-        );
-        canvas.drawLine(
-          Offset(pos.dx + halfS, pos.dy - halfS),
-          Offset(pos.dx - halfS, pos.dy + halfS),
-          markerPaint,
-        );
+        canvas.drawLine(Offset(pos.dx - halfS, pos.dy), Offset(pos.dx + halfS, pos.dy), markerPaint);
+        canvas.drawLine(Offset(pos.dx, pos.dy - halfS), Offset(pos.dx, pos.dy + halfS), markerPaint);
         break;
 
       case SnapType.node:
-        // AutoCAD 노드: 원 안에 X
+        // 노드: 원 안에 X ⊗
         markerPaint.color = Colors.cyanAccent;
         final halfS = s / 2;
         canvas.drawCircle(pos, halfS, markerPaint);
         final inner = halfS * 0.6;
-        canvas.drawLine(
-          Offset(pos.dx - inner, pos.dy - inner),
-          Offset(pos.dx + inner, pos.dy + inner),
-          markerPaint,
-        );
-        canvas.drawLine(
-          Offset(pos.dx + inner, pos.dy - inner),
-          Offset(pos.dx - inner, pos.dy + inner),
-          markerPaint,
-        );
+        canvas.drawLine(Offset(pos.dx - inner, pos.dy - inner), Offset(pos.dx + inner, pos.dy + inner), markerPaint);
+        canvas.drawLine(Offset(pos.dx + inner, pos.dy - inner), Offset(pos.dx - inner, pos.dy + inner), markerPaint);
+        break;
+
+      case SnapType.quadrant:
+        // 사분점: 마름모 ◇
+        markerPaint.color = Colors.greenAccent;
+        final halfS = s / 2;
+        final path = Path()
+          ..moveTo(pos.dx, pos.dy - halfS)
+          ..lineTo(pos.dx + halfS, pos.dy)
+          ..lineTo(pos.dx, pos.dy + halfS)
+          ..lineTo(pos.dx - halfS, pos.dy)
+          ..close();
+        canvas.drawPath(path, markerPaint);
+        break;
+
+      case SnapType.intersection:
+        // 교차: X
+        markerPaint.color = Colors.yellowAccent;
+        final halfS = s / 2;
+        canvas.drawLine(Offset(pos.dx - halfS, pos.dy - halfS), Offset(pos.dx + halfS, pos.dy + halfS), markerPaint);
+        canvas.drawLine(Offset(pos.dx + halfS, pos.dy - halfS), Offset(pos.dx - halfS, pos.dy + halfS), markerPaint);
+        break;
+
+      case SnapType.insertion:
+        // 삽입점: 사각형 안에 십자 ⊞
+        markerPaint.color = Colors.yellow;
+        final halfS = s / 2;
+        final rect = Rect.fromCenter(center: pos, width: s, height: s);
+        canvas.drawRect(rect, markerPaint);
+        canvas.drawLine(Offset(pos.dx - halfS, pos.dy), Offset(pos.dx + halfS, pos.dy), markerPaint);
+        canvas.drawLine(Offset(pos.dx, pos.dy - halfS), Offset(pos.dx, pos.dy + halfS), markerPaint);
+        break;
+
+      case SnapType.perpendicular:
+        // 수직: ⊥ 기호
+        markerPaint.color = Colors.greenAccent;
+        final halfS = s / 2;
+        canvas.drawLine(Offset(pos.dx - halfS, pos.dy + halfS), Offset(pos.dx + halfS, pos.dy + halfS), markerPaint);
+        canvas.drawLine(Offset(pos.dx, pos.dy - halfS), Offset(pos.dx, pos.dy + halfS), markerPaint);
+        break;
+
+      case SnapType.tangent:
+        // 접선: 원 위에 수평선
+        markerPaint.color = Colors.greenAccent;
+        final halfS = s / 2;
+        canvas.drawCircle(pos, halfS * 0.7, markerPaint);
+        canvas.drawLine(Offset(pos.dx - halfS, pos.dy - halfS * 0.7), Offset(pos.dx + halfS, pos.dy - halfS * 0.7), markerPaint);
+        break;
+
+      case SnapType.nearest:
+        // 최근점: 모래시계 ⌛
+        markerPaint.color = Colors.greenAccent;
+        final halfS = s / 2;
+        final path = Path()
+          ..moveTo(pos.dx - halfS, pos.dy - halfS)
+          ..lineTo(pos.dx + halfS, pos.dy - halfS)
+          ..lineTo(pos.dx - halfS, pos.dy + halfS)
+          ..lineTo(pos.dx + halfS, pos.dy + halfS)
+          ..close();
+        canvas.drawPath(path, markerPaint);
         break;
     }
 
-    // 스냅 좌표 텍스트
-    final textSpan = TextSpan(
-      text:
-          '${snap.dxfX.toStringAsFixed(3)}, ${snap.dxfY.toStringAsFixed(3)}',
-      style: const TextStyle(
-        color: Colors.white,
-        fontSize: 11,
-        backgroundColor: Color(0xAA000000),
-      ),
+    // 스냅 좌표 텍스트 (2줄: N, E)
+    const coordStyle = TextStyle(
+      color: Colors.white,
+      fontSize: 11,
+      backgroundColor: Color(0xAA000000),
     );
-    final textPainter = TextPainter(
-      text: textSpan,
+    final tp1 = TextPainter(
+      text: TextSpan(text: 'N ${snap.dxfY.toStringAsFixed(4)}', style: coordStyle),
       textDirection: TextDirection.ltr,
-    );
-    textPainter.layout();
-    textPainter.paint(canvas, Offset(pos.dx + s, pos.dy - s - 4));
+    )..layout();
+    final tp2 = TextPainter(
+      text: TextSpan(text: 'E ${snap.dxfX.toStringAsFixed(4)}', style: coordStyle),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp1.paint(canvas, Offset(pos.dx + s, pos.dy - s - 4));
+    tp2.paint(canvas, Offset(pos.dx + s, pos.dy - s - 4 + tp1.height + 2));
   }
 
   @override
@@ -360,7 +394,29 @@ class ConfirmedPointsPainter extends CustomPainter {
     for (final pt in points) {
       final pos = transformPoint!(pt.dxfX, pt.dxfY);
       _drawConfirmedMarker(canvas, pos, pt.type);
+      _drawCoordLabel(canvas, pos, pt.dxfX, pt.dxfY);
     }
+  }
+
+  /// 확정 포인트 옆에 좌표 2줄 표시
+  void _drawCoordLabel(Canvas canvas, Offset pos, double dxfX, double dxfY) {
+    const style = TextStyle(
+      color: Colors.white,
+      fontSize: 11,
+      backgroundColor: Color(0xAA000000),
+    );
+    final tp1 = TextPainter(
+      text: TextSpan(text: 'N ${dxfY.toStringAsFixed(4)}', style: style),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final tp2 = TextPainter(
+      text: TextSpan(text: 'E ${dxfX.toStringAsFixed(4)}', style: style),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final x = pos.dx + _markerSize + 4;
+    final y = pos.dy - tp1.height;
+    tp1.paint(canvas, Offset(x, y));
+    tp2.paint(canvas, Offset(x, y + tp1.height + 2));
   }
 
   void _drawConfirmedMarker(Canvas canvas, Offset pos, SnapType type) {
@@ -373,9 +429,6 @@ class ConfirmedPointsPainter extends CustomPainter {
 
     // 스냅 타입별 색상
     switch (type) {
-      case SnapType.endpoint:
-        markerPaint.color = Colors.greenAccent;
-        break;
       case SnapType.center:
         markerPaint.color = const Color(0xFFFF40FF);
         break;
@@ -384,6 +437,12 @@ class ConfirmedPointsPainter extends CustomPainter {
         break;
       case SnapType.node:
         markerPaint.color = Colors.cyanAccent;
+        break;
+      case SnapType.insertion:
+        markerPaint.color = Colors.yellow;
+        break;
+      default:
+        markerPaint.color = Colors.greenAccent;
         break;
     }
 

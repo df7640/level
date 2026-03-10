@@ -28,11 +28,11 @@ class DimensionStyle {
   final double extensionOvershoot;
 
   const DimensionStyle({
-    this.color = const Color(0xFFFFFF00), // yellow
-    this.fontSize = 13.0,
-    this.decimalPlaces = 3,
+    this.color = const Color(0xFF00FF00), // green
+    this.fontSize = 16.0,
+    this.decimalPlaces = 2,
     this.arrowStyle = ArrowStyle.filled,
-    this.arrowSize = 10.0,
+    this.arrowSize = 12.0,
     this.extensionGap = 4.0,
     this.extensionOvershoot = 6.0,
   });

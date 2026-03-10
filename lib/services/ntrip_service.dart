@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum NtripState {
@@ -31,10 +32,16 @@ class NtripConfig {
     final prefs = await SharedPreferences.getInstance();
     final host = prefs.getString('ntrip_host');
     if (host == null || host.isEmpty) return null;
+    // 마이그레이션: VRS-RTCM31 → VRS-RTCM34 (i80 다중주파 수신기용)
+    var mount = prefs.getString('ntrip_mount') ?? '';
+    if (mount == 'VRS-RTCM31') {
+      mount = 'VRS-RTCM34';
+      await prefs.setString('ntrip_mount', mount);
+    }
     return NtripConfig(
       host: host,
       port: prefs.getInt('ntrip_port') ?? 2101,
-      mountPoint: prefs.getString('ntrip_mount') ?? '',
+      mountPoint: mount,
       username: prefs.getString('ntrip_user') ?? '',
       password: prefs.getString('ntrip_pass') ?? '',
     );
@@ -64,10 +71,17 @@ class NtripService extends ChangeNotifier {
 
   int _bytesReceived = 0;
   DateTime? _lastDataTime;
+  Timer? _reconnectTimer;
+  bool _shouldAutoReconnect = false;
 
   // 디버그 로그 (앱 화면 표시용)
   final List<String> debugLog = [];
   static const int _maxLogLines = 30;
+
+  // 파일 로그
+  IOSink? _logSink;
+  String? _logFilePath;
+  String? get logFilePath => _logFilePath;
 
   NtripState get state => _state;
   NtripConfig? get config => _config;
@@ -76,12 +90,55 @@ class NtripService extends ChangeNotifier {
   DateTime? get lastDataTime => _lastDataTime;
   bool get isConnected => _state == NtripState.connected;
 
+  /// 파일 로그 초기화 (앱 시작 시 호출)
+  Future<void> initFileLog() async {
+    try {
+      final dir = await getExternalStorageDirectory();
+      if (dir == null) {
+        // fallback: Download 폴더 직접 접근
+        final dlDir = Directory('/storage/emulated/0/Download');
+        if (await dlDir.exists()) {
+          _logFilePath = '${dlDir.path}/ntrip_log.txt';
+        }
+      } else {
+        // 외부 저장소의 상위 → Download 폴더
+        // /storage/emulated/0/Android/data/xxx/files → /storage/emulated/0/Download
+        final segments = dir.path.split('/');
+        final emulatedIdx = segments.indexOf('Android');
+        if (emulatedIdx > 0) {
+          _logFilePath = '${segments.sublist(0, emulatedIdx).join('/')}/Download/ntrip_log.txt';
+        } else {
+          _logFilePath = '${dir.path}/ntrip_log.txt';
+        }
+      }
+      if (_logFilePath != null) {
+        final file = File(_logFilePath!);
+        _logSink = file.openWrite(mode: FileMode.append);
+        final ts = DateTime.now();
+        _logSink!.writeln('\n========== 세션 시작 ${ts.toString()} ==========');
+        await _logSink!.flush();
+        debugPrint('[NTRIP] 로그파일: $_logFilePath');
+      }
+    } catch (e) {
+      debugPrint('[NTRIP] 로그파일 초기화 실패: $e');
+    }
+  }
+
   void _log(String msg) {
     final ts = DateTime.now();
     final line = '[${ts.hour.toString().padLeft(2,'0')}:${ts.minute.toString().padLeft(2,'0')}:${ts.second.toString().padLeft(2,'0')}] $msg';
     debugPrint('[NTRIP] $msg');
     debugLog.add(line);
     if (debugLog.length > _maxLogLines) debugLog.removeAt(0);
+    // 파일 기록
+    _logSink?.writeln(line);
+  }
+
+  /// 외부에서 파일 로그에 기록 (BT 서비스 등)
+  void logExternal(String msg) {
+    final ts = DateTime.now();
+    final line = '[${ts.hour.toString().padLeft(2,'0')}:${ts.minute.toString().padLeft(2,'0')}:${ts.second.toString().padLeft(2,'0')}] $msg';
+    _logSink?.writeln(line);
   }
 
   Future<void> loadConfig() async {
@@ -99,64 +156,87 @@ class NtripService extends ChangeNotifier {
 
     _log('소스테이블 요청: ${cfg.host}:${cfg.port}');
 
-    try {
-      final socket = await Socket.connect(cfg.host, cfg.port,
-          timeout: const Duration(seconds: 10));
-      _log('소스테이블 TCP 연결 성공');
+    // 여러 호스트 후보 시도
+    final hosts = <String>{cfg.host, 'rts1.ngii.go.kr', 'gnss.ngii.go.kr'}.toList();
 
-      final request = 'GET / HTTP/1.1\r\n'
-          'Host: ${cfg.host}\r\n'
-          'Ntrip-Version: Ntrip/2.0\r\n'
-          'User-Agent: NTRIP LongitudinalViewer/1.0\r\n'
-          '\r\n';
-      socket.add(utf8.encode(request));
-      _log('소스테이블 요청 전송');
+    for (final host in hosts) {
+      try {
+        final socket = await Socket.connect(host, cfg.port,
+            timeout: const Duration(seconds: 8));
+        _log('소스테이블 TCP 연결 성공: $host');
 
-      final completer = Completer<List<String>>();
-      final buffer = StringBuffer();
+        final credentials = base64Encode(utf8.encode('${cfg.username}:${cfg.password}'));
+        final request = 'GET / HTTP/1.1\r\n'
+            'Host: $host\r\n'
+            'Ntrip-Version: Ntrip/2.0\r\n'
+            'User-Agent: NTRIP LongitudinalViewer/1.0\r\n'
+            'Authorization: Basic $credentials\r\n'
+            '\r\n';
+        socket.add(utf8.encode(request));
 
-      socket.listen(
-        (data) {
-          buffer.write(utf8.decode(data, allowMalformed: true));
-        },
-        onDone: () {
-          final response = buffer.toString();
-          _log('소스테이블 응답 수신 (${response.length}바이트)');
-          final mountPoints = <String>[];
-          for (final line in response.split('\n')) {
-            if (line.startsWith('STR;')) {
-              final parts = line.split(';');
-              if (parts.length > 1) mountPoints.add(parts[1].trim());
+        final completer = Completer<List<String>>();
+        final buffer = StringBuffer();
+        final mountPoints = <String>[];
+
+        socket.listen(
+          (data) {
+            buffer.write(utf8.decode(data, allowMalformed: true));
+            // 데이터가 올 때마다 즉시 파싱 (서버가 연결 안 닫을 수 있음)
+            final text = buffer.toString();
+            mountPoints.clear();
+            for (final line in text.split('\n')) {
+              if (line.startsWith('STR;')) {
+                final parts = line.split(';');
+                if (parts.length > 1) mountPoints.add(parts[1].trim());
+              }
             }
+            // ENDSOURCETABLE 감지 시 즉시 완료
+            if (text.contains('ENDSOURCETABLE')) {
+              if (!completer.isCompleted) {
+                _log('마운트포인트 ${mountPoints.length}개 발견: ${mountPoints.take(5).join(', ')}');
+                notifyListeners();
+                completer.complete(List.from(mountPoints));
+              }
+            }
+          },
+          onDone: () {
+            if (!completer.isCompleted) {
+              _log('마운트포인트 ${mountPoints.length}개 발견 (연결종료): ${mountPoints.take(5).join(', ')}');
+              notifyListeners();
+              completer.complete(List.from(mountPoints));
+            }
+          },
+          onError: (e) {
+            _log('소스테이블 오류: $e');
+            notifyListeners();
+            if (!completer.isCompleted) completer.complete([]);
+          },
+        );
+
+        Future.delayed(const Duration(seconds: 8), () {
+          if (!completer.isCompleted) {
+            // 타임아웃이어도 이미 파싱된 결과 반환
+            if (mountPoints.isNotEmpty) {
+              _log('소스테이블 타임아웃 (${mountPoints.length}개 수집됨)');
+            } else {
+              _log('소스테이블 타임아웃 ($host)');
+            }
+            socket.destroy();
+            notifyListeners();
+            completer.complete(List.from(mountPoints));
           }
-          _log('마운트포인트 ${mountPoints.length}개 발견: ${mountPoints.take(5).join(', ')}');
-          notifyListeners();
-          if (!completer.isCompleted) completer.complete(mountPoints);
-        },
-        onError: (e) {
-          _log('소스테이블 오류: $e');
-          notifyListeners();
-          if (!completer.isCompleted) completer.complete([]);
-        },
-      );
+        });
 
-      Future.delayed(const Duration(seconds: 8), () {
-        if (!completer.isCompleted) {
-          _log('소스테이블 타임아웃');
-          socket.destroy();
-          notifyListeners();
-          completer.complete([]);
-        }
-      });
-
-      final result = await completer.future;
-      try { socket.destroy(); } catch (_) {}
-      return result;
-    } catch (e) {
-      _log('소스테이블 TCP 연결 실패: $e');
-      notifyListeners();
-      return [];
+        final result = await completer.future;
+        try { socket.destroy(); } catch (_) {}
+        if (result.isNotEmpty) return result;
+        _log('$host에서 마운트포인트 없음, 다음 호스트 시도');
+      } catch (e) {
+        _log('소스테이블 연결 실패 ($host): $e');
+      }
     }
+    notifyListeners();
+    return [];
   }
 
   /// NTRIP 서버 연결
@@ -166,10 +246,11 @@ class NtripService extends ChangeNotifier {
     }
 
     _config = config;
+    _shouldAutoReconnect = true;
+    _reconnectTimer?.cancel();
     _state = NtripState.connecting;
     _errorMessage = null;
     _bytesReceived = 0;
-    debugLog.clear();
     notifyListeners();
 
     // 연결 전에 설정 저장 (실패해도 다음에 불러옴)
@@ -178,12 +259,11 @@ class NtripService extends ChangeNotifier {
     _log('마운트포인트: ${config.mountPoint}');
     _log('계정: ${config.username} / ${config.password.replaceAll(RegExp(r'.'), '*')}');
 
-    // 국토지리정보원 서버 주소 후보 (구주소 → 신주소 → 직접IP 순서로 시도)
+    // 국토지리정보원 서버 주소 후보 (설정값 → rts1 → gnss 순서로 시도)
     final hosts = <String>{
       config.host,
-      'RTS1.ngii.go.kr',
+      'rts1.ngii.go.kr',
       'gnss.ngii.go.kr',
-      '1.241.250.218',
     }.toList();
 
     try {
@@ -208,12 +288,11 @@ class NtripService extends ChangeNotifier {
 
       final credentials = base64Encode(utf8.encode('${config.username}:${config.password}'));
       final request = 'GET /${config.mountPoint} HTTP/1.1\r\n'
-          'Host: ${config.host}\r\n'
+          'Host: $connectedHost\r\n'
           'Ntrip-Version: Ntrip/2.0\r\n'
           'User-Agent: NTRIP LongitudinalViewer/1.0\r\n'
           'Authorization: Basic $credentials\r\n'
           'Accept: */*\r\n'
-          'Connection: close\r\n'
           '\r\n';
 
       _socket!.add(utf8.encode(request));
@@ -303,6 +382,7 @@ class NtripService extends ChangeNotifier {
           _state = NtripState.disconnected;
           _stopGgaSender();
           notifyListeners();
+          _scheduleReconnect();
         },
         onError: (error) {
           _log('소켓 오류: $error');
@@ -310,6 +390,7 @@ class NtripService extends ChangeNotifier {
           _state = NtripState.error;
           _stopGgaSender();
           notifyListeners();
+          _scheduleReconnect();
         },
       );
     } catch (e) {
@@ -320,11 +401,91 @@ class NtripService extends ChangeNotifier {
     }
   }
 
+  int _rtcmPacketCount = 0;
+  final Map<int, int> _rtcmTypeCounts = {};
+  DateTime? _rtcmStartTime;
+
+  /// 수신된 RTCM 메시지 타입 집계
+  Map<int, int> get rtcmTypeCounts => Map.unmodifiable(_rtcmTypeCounts);
+
+  /// RTCM 메시지 타입 이름
+  static String rtcmTypeName(int type) {
+    switch (type) {
+      case 1001: case 1002: case 1003: case 1004: return 'GPS L1/L2(구형)';
+      case 1005: case 1006: return '기준국좌표';
+      case 1007: case 1008: return '안테나정보';
+      case 1009: case 1010: case 1011: case 1012: return 'GLO L1/L2(구형)';
+      case 1019: return 'GPS 궤도';
+      case 1020: return 'GLO 궤도';
+      case 1033: return '안테나+수신기';
+      case 1042: return 'BDS 궤도';
+      case 1044: return 'QZSS 궤도';
+      case 1045: case 1046: return 'GAL 궤도';
+      case 1074: return 'GPS MSM4';
+      case 1077: return 'GPS MSM7';
+      case 1084: return 'GLO MSM4';
+      case 1087: return 'GLO MSM7';
+      case 1094: return 'GAL MSM4';
+      case 1097: return 'GAL MSM7';
+      case 1104: return 'SBAS MSM4';
+      case 1107: return 'SBAS MSM7';
+      case 1114: return 'QZSS MSM4';
+      case 1117: return 'QZSS MSM7';
+      case 1124: return 'BDS MSM4';
+      case 1127: return 'BDS MSM7';
+      case 1230: return 'GLO 코드바이어스';
+      case 4094: return '사용자정의';
+      default:
+        if (type >= 1071 && type <= 1137) return 'MSM($type)';
+        return '$type';
+    }
+  }
+
+  /// MSM 메시지 수신 여부 확인 (RTK Fix에 필수)
+  bool get hasReceivedMsm => _rtcmTypeCounts.keys.any((t) => t >= 1071 && t <= 1137);
+
   void _handleRtcmData(Uint8List data) {
     final wasZero = _bytesReceived == 0;
     _bytesReceived += data.length;
+    _rtcmPacketCount++;
     _lastDataTime = DateTime.now();
-    if (wasZero) _log('첫 RTCM 데이터 수신 (${data.length}바이트)');
+    _rtcmStartTime ??= DateTime.now();
+
+    // RTCM3 프레임 파싱 - 한 패킷에 여러 메시지가 있을 수 있음
+    int offset = 0;
+    final msgTypes = <int>[];
+    while (offset < data.length - 4) {
+      if (data[offset] == 0xD3) {
+        final len = ((data[offset + 1] & 0x03) << 8) | data[offset + 2];
+        if (offset + 3 + len <= data.length) {
+          final msgType = ((data[offset + 3] & 0xFF) << 4) | ((data[offset + 4] & 0xF0) >> 4);
+          msgTypes.add(msgType);
+          _rtcmTypeCounts[msgType] = (_rtcmTypeCounts[msgType] ?? 0) + 1;
+          offset += 3 + len + 3; // header(3) + payload(len) + CRC(3)
+          continue;
+        }
+      }
+      offset++;
+    }
+
+    String msgInfo = '${data.length}B';
+    if (msgTypes.isNotEmpty) {
+      msgInfo = '${data.length}B [${msgTypes.map((t) => rtcmTypeName(t)).join(',')}]';
+    }
+
+    if (wasZero) {
+      _log('첫 RTCM 수신 ($msgInfo)');
+    } else if (_rtcmPacketCount % 20 == 0) {
+      final elapsed = DateTime.now().difference(_rtcmStartTime!).inSeconds;
+      final typesSummary = _rtcmTypeCounts.entries
+          .map((e) => '${rtcmTypeName(e.key)}:${e.value}')
+          .join(', ');
+      _log('RTCM ${elapsed}초 누적 ${(_bytesReceived / 1024).toStringAsFixed(1)}KB (${_rtcmPacketCount}패킷)');
+      _log('  메시지: $typesSummary');
+      if (!hasReceivedMsm) {
+        _log('⚠️ MSM 메시지 미수신! 마운트포인트 확인 필요 (VRS-RTCM34 권장)');
+      }
+    }
     onRtcmData?.call(data);
     notifyListeners();
   }
@@ -332,18 +493,37 @@ class NtripService extends ChangeNotifier {
   void _startGgaSender() {
     _stopGgaSender();
     _sendGga();
-    _ggaSendTimer = Timer.periodic(const Duration(seconds: 10), (_) => _sendGga());
+    _ggaSendTimer = Timer.periodic(const Duration(seconds: 1), (_) => _sendGga());
   }
+
+  int _ggaSendCount = 0;
 
   void _sendGga() {
     if (_socket == null || _state != NtripState.connected) return;
     if (_lastGga == null || _lastGga!.isEmpty) {
-      _log('GGA 미수신 - GPS 연결 확인 필요');
+      if (_ggaSendCount % 5 == 0) _log('GGA 미수신 - GPS 연결 확인 필요');
+      _ggaSendCount++;
       return;
     }
     try {
       _socket!.add(utf8.encode('${_lastGga!}\r\n'));
-      _log('GGA 전송: ${_lastGga!.substring(0, _lastGga!.length.clamp(0, 50))}');
+      _ggaSendCount++;
+
+      // 5초에 한 번만 로그 (1초 전송이지만 로그 과다 방지)
+      if (_ggaSendCount % 5 == 0) {
+        final parts = _lastGga!.split(',');
+        final fixQ = parts.length > 6 ? parts[6] : '?';
+        final sats = parts.length > 7 ? parts[7] : '?';
+        final hdop = parts.length > 8 ? parts[8] : '?';
+        final alt = parts.length > 9 ? parts[9] : '?';
+        final hasChecksum = _lastGga!.contains('*');
+        final lat = parts.length > 2 ? '${parts[2]}${parts[3]}' : '?';
+        final lon = parts.length > 5 ? '${parts[4]}${parts[5]}' : '?';
+        _log('GGA→서버 Fix:$fixQ 위성:$sats HDOP:$hdop 고도:${alt}m ${hasChecksum ? "CK✓" : "CK✗"}');
+        if (_ggaSendCount % 15 == 0) {
+          _log('  좌표: $lat/$lon');
+        }
+      }
     } catch (e) {
       _log('GGA 전송 실패: $e');
     }
@@ -354,7 +534,22 @@ class NtripService extends ChangeNotifier {
     _ggaSendTimer = null;
   }
 
+  /// 자동 재연결 (5초 후)
+  void _scheduleReconnect() {
+    if (!_shouldAutoReconnect || _config == null) return;
+    _reconnectTimer?.cancel();
+    _log('5초 후 자동 재연결...');
+    _reconnectTimer = Timer(const Duration(seconds: 5), () {
+      if (_shouldAutoReconnect && _state == NtripState.disconnected) {
+        _log('자동 재연결 시도');
+        connect(_config!);
+      }
+    });
+  }
+
   Future<void> disconnect() async {
+    _shouldAutoReconnect = false;
+    _reconnectTimer?.cancel();
     _stopGgaSender();
     try { _socket?.destroy(); } catch (_) {}
     _socket = null;
@@ -365,6 +560,10 @@ class NtripService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _reconnectTimer?.cancel();
+    _log('세션 종료');
+    _logSink?.flush().then((_) => _logSink?.close());
+    _logSink = null;
     disconnect();
     super.dispose();
   }

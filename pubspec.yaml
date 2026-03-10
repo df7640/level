@@ -87,7 +87,13 @@ flutter:
 
   # 샘플 데이터 파일
   assets:
-    - assets/sample_data/
+    - assets/sample_data/1.dxf
+    - assets/sample_data/stations.csv
+    - assets/sample_data/test.csv
+    - assets/sample_data/test.dxf
+    - assets/sample_data/test2.csv
+    - assets/sample_data/빠진거.csv
+    - assets/sample_data/종단면도 1~57.xlsx
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

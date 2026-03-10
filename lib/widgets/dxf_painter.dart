@@ -8,6 +8,7 @@ class DxfPainter extends CustomPainter {
   final double zoom;
   final Offset offset;
   final Set<String> hiddenLayers;
+  final int repaintVersion;
 
   /// TextPainter 캐시: 키 = "text|fontSize" → TextPainter (layout 완료 상태)
   static final Map<String, TextPainter> _textCache = {};
@@ -19,6 +20,7 @@ class DxfPainter extends CustomPainter {
     this.zoom = 1.0,
     this.offset = Offset.zero,
     this.hiddenLayers = const {},
+    this.repaintVersion = 0,
   });
 
   @override
@@ -608,7 +610,8 @@ class DxfPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant DxfPainter oldDelegate) {
-    return oldDelegate.entities != entities ||
+    return oldDelegate.repaintVersion != repaintVersion ||
+        oldDelegate.entities != entities ||
         oldDelegate.bounds != bounds ||
         oldDelegate.zoom != zoom ||
         oldDelegate.offset != offset ||

@@ -18,7 +18,7 @@ class StationData {
   final double? roadbedRight; // 노체_우(안)
 
   // 추가 필드 (엑셀 신규 컬럼)
-  final double? foundationExcavation; // 기초터파기
+  final double? foundationLevel; // 기초바닥레벨
   final double? offsetLeft; // 옵셋좌
   final double? offsetRight; // 옵셋우
   final String? lr; // LR (좌안/우안 구분: "L", "R", "N" 등)
@@ -26,6 +26,7 @@ class StationData {
   final double? singleCount; // 단수
   final double? slope; // 기울기
   final double? angle; // 각도
+  final double? excavationDepth; // 터파기깊이
 
   // 기존 필드들 (호환성 유지)
   final double? ghD; // GH-D
@@ -62,7 +63,7 @@ class StationData {
     this.plannedBankRight,
     this.roadbedLeft,
     this.roadbedRight,
-    this.foundationExcavation,
+    this.foundationLevel,
     this.offsetLeft,
     this.offsetRight,
     this.lr,
@@ -70,6 +71,7 @@ class StationData {
     this.singleCount,
     this.slope,
     this.angle,
+    this.excavationDepth,
     this.ghD,
     this.gh1,
     this.gh2,
@@ -112,7 +114,7 @@ class StationData {
     double? plannedBankRight,
     double? roadbedLeft,
     double? roadbedRight,
-    double? foundationExcavation,
+    double? foundationLevel,
     double? offsetLeft,
     double? offsetRight,
     String? lr,
@@ -120,6 +122,7 @@ class StationData {
     double? singleCount,
     double? slope,
     double? angle,
+    double? excavationDepth,
     double? ghD,
     double? gh1,
     double? gh2,
@@ -150,7 +153,7 @@ class StationData {
       plannedBankRight: plannedBankRight ?? this.plannedBankRight,
       roadbedLeft: roadbedLeft ?? this.roadbedLeft,
       roadbedRight: roadbedRight ?? this.roadbedRight,
-      foundationExcavation: foundationExcavation ?? this.foundationExcavation,
+      foundationLevel: foundationLevel ?? this.foundationLevel,
       offsetLeft: offsetLeft ?? this.offsetLeft,
       offsetRight: offsetRight ?? this.offsetRight,
       lr: lr ?? this.lr,
@@ -158,6 +161,7 @@ class StationData {
       singleCount: singleCount ?? this.singleCount,
       slope: slope ?? this.slope,
       angle: angle ?? this.angle,
+      excavationDepth: excavationDepth ?? this.excavationDepth,
       ghD: ghD ?? this.ghD,
       gh1: gh1 ?? this.gh1,
       gh2: gh2 ?? this.gh2,
@@ -191,7 +195,7 @@ class StationData {
       'planned_bank_right': plannedBankRight,
       'roadbed_left': roadbedLeft,
       'roadbed_right': roadbedRight,
-      'foundation_excavation': foundationExcavation,
+      'foundation_level': foundationLevel,
       'offset_left': offsetLeft,
       'offset_right': offsetRight,
       'lr': lr,
@@ -199,6 +203,7 @@ class StationData {
       'single_count': singleCount,
       'slope': slope,
       'angle': angle,
+      'excavation_depth': excavationDepth,
       'gh_d': ghD,
       'gh1': gh1,
       'gh2': gh2,
@@ -232,7 +237,7 @@ class StationData {
       plannedBankRight: json['planned_bank_right'] as double?,
       roadbedLeft: json['roadbed_left'] as double?,
       roadbedRight: json['roadbed_right'] as double?,
-      foundationExcavation: json['foundation_excavation'] as double?,
+      foundationLevel: json['foundation_level'] as double?,
       offsetLeft: json['offset_left'] as double?,
       offsetRight: json['offset_right'] as double?,
       lr: json['lr'] as String?,
@@ -240,6 +245,7 @@ class StationData {
       singleCount: json['single_count'] as double?,
       slope: json['slope'] as double?,
       angle: json['angle'] as double?,
+      excavationDepth: json['excavation_depth'] as double?,
       ghD: json['gh_d'] as double?,
       gh1: json['gh1'] as double?,
       gh2: json['gh2'] as double?,
@@ -277,7 +283,7 @@ class StationData {
       roadbedRight?.toString() ?? '',
       x?.toString() ?? '',
       y?.toString() ?? '',
-      foundationExcavation?.toString() ?? '',
+      foundationLevel?.toString() ?? '',
       offsetLeft?.toString() ?? '',
       offsetRight?.toString() ?? '',
       lr ?? '',
@@ -285,6 +291,7 @@ class StationData {
       singleCount?.toString() ?? '',
       slope?.toString() ?? '',
       angle?.toString() ?? '',
+      excavationDepth?.toString() ?? '',
     ];
   }
 

@@ -401,13 +401,14 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
       {'value': 'plannedBankRight', 'label': '계획제방고(R)'},
       {'value': 'roadbedLeft', 'label': '노체(L)'},
       {'value': 'roadbedRight', 'label': '노체(R)'},
-      {'value': 'foundationExcavation', 'label': '기초터파기'},
+      {'value': 'foundationLevel', 'label': '기초바닥레벨'},
       {'value': 'offsetLeft', 'label': '옵셋좌'},
       {'value': 'offsetRight', 'label': '옵셋우'},
       {'value': 'height', 'label': 'Height'},
       {'value': 'singleCount', 'label': '단수'},
       {'value': 'slope', 'label': '기울기'},
       {'value': 'angle', 'label': '각도'},
+      {'value': 'excavationDepth', 'label': '터파기깊이'},
     ];
 
     showModalBottomSheet(
@@ -1014,8 +1015,8 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
         return station.roadbedLeft;
       case 'roadbedRight':
         return station.roadbedRight;
-      case 'foundationExcavation':
-        return station.foundationExcavation;
+      case 'foundationLevel':
+        return station.foundationLevel;
       case 'offsetLeft':
         return station.offsetLeft;
       case 'offsetRight':
@@ -1028,6 +1029,8 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
         return station.slope;
       case 'angle':
         return station.angle;
+      case 'excavationDepth':
+        return station.excavationDepth;
       default:
         return station.gh;
     }
@@ -1384,13 +1387,14 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
       case 'plannedBankRight': return '계획제방고(R)';
       case 'roadbedLeft': return '노체(L)';
       case 'roadbedRight': return '노체(R)';
-      case 'foundationExcavation': return '기초터파기';
+      case 'foundationLevel': return '기초바닥레벨';
       case 'offsetLeft': return '옵셋좌';
       case 'offsetRight': return '옵셋우';
       case 'height': return 'Height';
       case 'singleCount': return '단수';
       case 'slope': return '기울기';
       case 'angle': return '각도';
+      case 'excavationDepth': return '터파기깊이';
       default: return column ?? '-';
     }
   }
@@ -1411,13 +1415,14 @@ class _LevelPanelScreenState extends State<LevelPanelScreen> {
       {'value': 'plannedBankRight', 'label': '계획제방고(R)'},
       {'value': 'roadbedLeft', 'label': '노체(L)'},
       {'value': 'roadbedRight', 'label': '노체(R)'},
-      {'value': 'foundationExcavation', 'label': '기초터파기'},
+      {'value': 'foundationLevel', 'label': '기초바닥레벨'},
       {'value': 'offsetLeft', 'label': '옵셋좌'},
       {'value': 'offsetRight', 'label': '옵셋우'},
       {'value': 'height', 'label': 'Height'},
       {'value': 'singleCount', 'label': '단수'},
       {'value': 'slope', 'label': '기울기'},
       {'value': 'angle', 'label': '각도'},
+      {'value': 'excavationDepth', 'label': '터파기깊이'},
     ];
 
     showModalBottomSheet(

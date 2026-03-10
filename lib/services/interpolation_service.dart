@@ -43,6 +43,14 @@ class InterpolationService {
       plannedBankRight: linearInterpolate(v1: from.plannedBankRight, v2: to.plannedBankRight, d1: d1, d2: d2, targetDist: targetDist),
       roadbedLeft: linearInterpolate(v1: from.roadbedLeft, v2: to.roadbedLeft, d1: d1, d2: d2, targetDist: targetDist),
       roadbedRight: linearInterpolate(v1: from.roadbedRight, v2: to.roadbedRight, d1: d1, d2: d2, targetDist: targetDist),
+      foundationLevel: linearInterpolate(v1: from.foundationLevel, v2: to.foundationLevel, d1: d1, d2: d2, targetDist: targetDist),
+      offsetLeft: linearInterpolate(v1: from.offsetLeft, v2: to.offsetLeft, d1: d1, d2: d2, targetDist: targetDist),
+      offsetRight: linearInterpolate(v1: from.offsetRight, v2: to.offsetRight, d1: d1, d2: d2, targetDist: targetDist),
+      height: linearInterpolate(v1: from.height, v2: to.height, d1: d1, d2: d2, targetDist: targetDist),
+      singleCount: linearInterpolate(v1: from.singleCount, v2: to.singleCount, d1: d1, d2: d2, targetDist: targetDist),
+      slope: linearInterpolate(v1: from.slope, v2: to.slope, d1: d1, d2: d2, targetDist: targetDist),
+      angle: linearInterpolate(v1: from.angle, v2: to.angle, d1: d1, d2: d2, targetDist: targetDist),
+      excavationDepth: linearInterpolate(v1: from.excavationDepth, v2: to.excavationDepth, d1: d1, d2: d2, targetDist: targetDist),
       ghD: linearInterpolate(v1: from.ghD, v2: to.ghD, d1: d1, d2: d2, targetDist: targetDist),
       gh1: linearInterpolate(v1: from.gh1, v2: to.gh1, d1: d1, d2: d2, targetDist: targetDist),
       gh2: linearInterpolate(v1: from.gh2, v2: to.gh2, d1: d1, d2: d2, targetDist: targetDist),
@@ -69,6 +77,7 @@ class InterpolationService {
   static List<StationData> interpolateAllStations({
     required List<StationData> allStations,
     required int interval, // 5, 10, 15, 20
+    bool includeOriginalPlus = true,
   }) {
     final List<StationData> result = [];
 
@@ -169,7 +178,9 @@ class InterpolationService {
       // 거리순 정렬 후 결과에 추가
       allPlusInSection.sort((a, b) => a.distance.compareTo(b.distance));
       for (final entry in allPlusInSection) {
-        result.add(entry.station);
+        if (includeOriginalPlus || !entry.isOriginal) {
+          result.add(entry.station);
+        }
       }
     }
 
@@ -177,9 +188,11 @@ class InterpolationService {
     result.add(sorted[baseIndices.last]);
 
     // 마지막 기본측점 이후의 원본 플러스체인 추가
-    final lastBaseIdx = baseIndices.last;
-    for (int i = lastBaseIdx + 1; i < sorted.length; i++) {
-      result.add(sorted[i]);
+    if (includeOriginalPlus) {
+      final lastBaseIdx = baseIndices.last;
+      for (int i = lastBaseIdx + 1; i < sorted.length; i++) {
+        result.add(sorted[i]);
+      }
     }
 
     return result;

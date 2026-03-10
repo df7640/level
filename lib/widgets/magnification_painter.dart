@@ -6,6 +6,7 @@ import 'snap_overlay_painter.dart';
 /// 커서 팁 주변 DXF 도면을 현재 줌 대비 3배 확대하여 좌상단 사각형에 표시
 class MagnificationPainter extends CustomPainter {
   final Offset cursorTipDxf; // 커서 팁 DXF 좌표
+  final Offset cursorTipScreen; // 커서 팁 화면 좌표
   final List<dynamic> entities;
   final Map<String, dynamic> bounds;
   final Set<String> hiddenLayers;
@@ -15,11 +16,14 @@ class MagnificationPainter extends CustomPainter {
 
   static const double _boxSize = 150.0; // 사각형 크기
   static const double _boxRadius = 8.0; // 라운드 코너
-  static const double _margin = 16.0;
+  static const double _marginX = 16.0; // 좌우 여백
+  static const double _marginTop = 70.0; // 상단 HUD 아래로
+  static const double _marginBottom = 16.0; // 하단 여백
   static const double _magFactor = 3.0; // 도면 뷰 대비 추가 확대 배율
 
   MagnificationPainter({
     required this.cursorTipDxf,
+    required this.cursorTipScreen,
     required this.entities,
     required this.bounds,
     required this.hiddenLayers,
@@ -31,7 +35,17 @@ class MagnificationPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final halfSize = _boxSize / 2;
-    final center = Offset(_margin + halfSize, _margin + halfSize);
+
+    // 커서 팁 화면 좌표 기준으로 박스 위치 결정
+    // 항상 왼쪽에 배치 (오른손잡이 사용성), 커서 위치에 따라 상/하 전환
+    final bool cursorInTop = cursorTipScreen.dy < size.height / 2;
+
+    final double boxX = _marginX + halfSize; // 항상 좌측
+    final double boxY = cursorInTop
+        ? size.height - _marginBottom - _boxSize + halfSize // 좌하단
+        : _marginTop + halfSize;                             // 좌상단
+
+    final center = Offset(boxX, boxY);
     final boxRect = RRect.fromRectAndRadius(
       Rect.fromCenter(center: center, width: _boxSize, height: _boxSize),
       Radius.circular(_boxRadius),
@@ -63,15 +77,16 @@ class MagnificationPainter extends CustomPainter {
     final magScale = viewScale * _magFactor;
 
     // 커서 팁 DXF 좌표가 중심에 오도록 오프셋 계산
+    final boxBottom = center.dy + halfSize;
     final magCenterOffX = (_boxSize - dxfW * magScale) / 2;
     final magCenterOffY = (_boxSize - dxfH * magScale) / 2;
     final magOffsetDx = center.dx - (cursorTipDxf.dx - minX) * magScale - magCenterOffX;
-    final magOffsetDy = (_margin + _boxSize) - center.dy - (cursorTipDxf.dy - minY) * magScale - magCenterOffY;
+    final magOffsetDy = boxBottom - center.dy - (cursorTipDxf.dy - minY) * magScale - magCenterOffY;
 
     // 변환 함수
     Offset magTransform(double x, double y) {
       final sx = (x - minX) * magScale + magCenterOffX + magOffsetDx;
-      final sy = (_margin + _boxSize) - ((y - minY) * magScale + magCenterOffY + magOffsetDy);
+      final sy = boxBottom - ((y - minY) * magScale + magCenterOffY + magOffsetDy);
       return Offset(sx, sy);
     }
 
@@ -122,6 +137,9 @@ class MagnificationPainter extends CustomPainter {
       final snapPos = magTransform(activeSnap!.dxfX, activeSnap!.dxfY);
       _drawSnapMarkerInMag(canvas, snapPos, activeSnap!.type);
     }
+
+    // 커서 그리기 (중앙 = 커서 팁 위치)
+    _drawCursorInMag(canvas, center);
 
     // 중앙 십자선
     final crossPaint = Paint()
@@ -296,8 +314,55 @@ class MagnificationPainter extends CustomPainter {
     canvas.drawCircle(position, 2.0, paint..style = PaintingStyle.fill);
   }
 
+  /// 확대 뷰 내 커서 (원 + 라인 + 화살촉)
+  void _drawCursorInMag(Canvas canvas, Offset tip) {
+    final pen = Paint()
+      ..color = Colors.white
+      ..strokeWidth = 1.0
+      ..style = PaintingStyle.stroke;
+
+    // 커서 원 (tip 기준 아래쪽에 위치 — 11시 방향 반대)
+    const double circleR = 12.0; // 축소된 크기
+    const double lineLen = 50.0;
+    const angleDeg = 120.0;
+    final angleRad = angleDeg * pi / 180.0;
+    // tip → circle center (반대 방향)
+    final cx = tip.dx - cos(angleRad) * lineLen;
+    final cy = tip.dy + sin(angleRad) * lineLen;
+    final circleCenter = Offset(cx, cy);
+
+    canvas.drawCircle(circleCenter, circleR,
+      Paint()..color = Colors.white..style = PaintingStyle.fill);
+    canvas.drawCircle(circleCenter, circleR, pen);
+    canvas.drawCircle(circleCenter, circleR + 1.5, pen);
+
+    // 라인 (원 → tip)
+    final startR = circleR + 1.5;
+    final lineStart = Offset(
+      circleCenter.dx + cos(angleRad) * startR,
+      circleCenter.dy - sin(angleRad) * startR,
+    );
+    canvas.drawLine(lineStart, tip, pen);
+
+    // 화살촉
+    const double headLen = 16.0;
+    const double headAngle = 15.0 * pi / 180.0;
+    final dx = tip.dx - lineStart.dx;
+    final dy = tip.dy - lineStart.dy;
+    final backAngle = atan2(-dy, -dx);
+    canvas.drawLine(tip, Offset(
+      tip.dx + headLen * cos(backAngle + headAngle),
+      tip.dy + headLen * sin(backAngle + headAngle),
+    ), pen);
+    canvas.drawLine(tip, Offset(
+      tip.dx + headLen * cos(backAngle - headAngle),
+      tip.dy + headLen * sin(backAngle - headAngle),
+    ), pen);
+  }
+
   void _drawSnapMarkerInMag(Canvas canvas, Offset pos, SnapType type) {
     const s = 10.0;
+    final halfS = s / 2;
     final paint = Paint()
       ..strokeWidth = 2.0
       ..style = PaintingStyle.stroke;
@@ -309,20 +374,52 @@ class MagnificationPainter extends CustomPainter {
         canvas.drawRect(rect, Paint()..color = Colors.greenAccent..style = PaintingStyle.fill);
         canvas.drawRect(rect, paint);
         break;
+      case SnapType.midpoint:
+        paint.color = Colors.greenAccent;
+        final path = Path()..moveTo(pos.dx, pos.dy - halfS)..lineTo(pos.dx - halfS, pos.dy + halfS)..lineTo(pos.dx + halfS, pos.dy + halfS)..close();
+        canvas.drawPath(path, paint);
+        break;
       case SnapType.center:
         paint.color = const Color(0xFFFF40FF);
-        canvas.drawCircle(pos, s / 2, paint);
-        canvas.drawLine(Offset(pos.dx - s / 2, pos.dy), Offset(pos.dx + s / 2, pos.dy), paint);
-        canvas.drawLine(Offset(pos.dx, pos.dy - s / 2), Offset(pos.dx, pos.dy + s / 2), paint);
+        canvas.drawCircle(pos, halfS, paint);
+        canvas.drawLine(Offset(pos.dx - halfS, pos.dy), Offset(pos.dx + halfS, pos.dy), paint);
+        canvas.drawLine(Offset(pos.dx, pos.dy - halfS), Offset(pos.dx, pos.dy + halfS), paint);
+        break;
+      case SnapType.quadrant:
+        paint.color = Colors.greenAccent;
+        final path = Path()..moveTo(pos.dx, pos.dy - halfS)..lineTo(pos.dx + halfS, pos.dy)..lineTo(pos.dx, pos.dy + halfS)..lineTo(pos.dx - halfS, pos.dy)..close();
+        canvas.drawPath(path, paint);
         break;
       case SnapType.intersection:
         paint.color = Colors.yellowAccent;
-        canvas.drawLine(Offset(pos.dx - s / 2, pos.dy - s / 2), Offset(pos.dx + s / 2, pos.dy + s / 2), paint);
-        canvas.drawLine(Offset(pos.dx + s / 2, pos.dy - s / 2), Offset(pos.dx - s / 2, pos.dy + s / 2), paint);
+        canvas.drawLine(Offset(pos.dx - halfS, pos.dy - halfS), Offset(pos.dx + halfS, pos.dy + halfS), paint);
+        canvas.drawLine(Offset(pos.dx + halfS, pos.dy - halfS), Offset(pos.dx - halfS, pos.dy + halfS), paint);
+        break;
+      case SnapType.insertion:
+        paint.color = Colors.yellow;
+        final rect = Rect.fromCenter(center: pos, width: s, height: s);
+        canvas.drawRect(rect, paint);
+        canvas.drawLine(Offset(pos.dx - halfS, pos.dy), Offset(pos.dx + halfS, pos.dy), paint);
+        canvas.drawLine(Offset(pos.dx, pos.dy - halfS), Offset(pos.dx, pos.dy + halfS), paint);
+        break;
+      case SnapType.perpendicular:
+        paint.color = Colors.greenAccent;
+        canvas.drawLine(Offset(pos.dx - halfS, pos.dy + halfS), Offset(pos.dx + halfS, pos.dy + halfS), paint);
+        canvas.drawLine(Offset(pos.dx, pos.dy - halfS), Offset(pos.dx, pos.dy + halfS), paint);
+        break;
+      case SnapType.tangent:
+        paint.color = Colors.greenAccent;
+        canvas.drawCircle(pos, halfS * 0.7, paint);
+        canvas.drawLine(Offset(pos.dx - halfS, pos.dy - halfS * 0.7), Offset(pos.dx + halfS, pos.dy - halfS * 0.7), paint);
+        break;
+      case SnapType.nearest:
+        paint.color = Colors.greenAccent;
+        final path = Path()..moveTo(pos.dx - halfS, pos.dy - halfS)..lineTo(pos.dx + halfS, pos.dy - halfS)..lineTo(pos.dx - halfS, pos.dy + halfS)..lineTo(pos.dx + halfS, pos.dy + halfS)..close();
+        canvas.drawPath(path, paint);
         break;
       case SnapType.node:
         paint.color = Colors.cyanAccent;
-        canvas.drawCircle(pos, s / 2, paint);
+        canvas.drawCircle(pos, halfS, paint);
         final inner = s / 2 * 0.6;
         canvas.drawLine(Offset(pos.dx - inner, pos.dy - inner), Offset(pos.dx + inner, pos.dy + inner), paint);
         canvas.drawLine(Offset(pos.dx + inner, pos.dy - inner), Offset(pos.dx - inner, pos.dy + inner), paint);
@@ -373,6 +470,7 @@ class MagnificationPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant MagnificationPainter oldDelegate) {
     return oldDelegate.cursorTipDxf != cursorTipDxf ||
+        oldDelegate.cursorTipScreen != cursorTipScreen ||
         oldDelegate.zoom != zoom ||
         oldDelegate.activeSnap != activeSnap;
   }

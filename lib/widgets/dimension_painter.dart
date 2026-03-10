@@ -135,8 +135,8 @@ class DimensionPainter extends CustomPainter {
         : style.color.withValues(alpha: alpha);
 
     _drawDimLine(canvas, dp1, dp2, dimColor, style);
-    _drawArrowhead(canvas, dp1, ux, uy, dimColor, style.arrowStyle, style.arrowSize);
-    _drawArrowhead(canvas, dp2, -ux, -uy, dimColor, style.arrowStyle, style.arrowSize);
+    _drawArrowhead(canvas, dp1, -ux, -uy, dimColor, style.arrowStyle, style.arrowSize);
+    _drawArrowhead(canvas, dp2, ux, uy, dimColor, style.arrowStyle, style.arrowSize);
 
     final sign = dimOffset >= 0 ? 1.0 : -1.0;
     _drawExtensionLines(canvas, p1, p2, dp1, dp2, nx, ny, sign, dimColor, style);
@@ -186,8 +186,8 @@ class DimensionPainter extends CustomPainter {
     final ux = hDx > 0 ? 1.0 : -1.0;
 
     _drawDimLine(canvas, dp1, dp2, dimColor, style);
-    _drawArrowhead(canvas, dp1, ux, 0, dimColor, style.arrowStyle, style.arrowSize);
-    _drawArrowhead(canvas, dp2, -ux, 0, dimColor, style.arrowStyle, style.arrowSize);
+    _drawArrowhead(canvas, dp1, -ux, 0, dimColor, style.arrowStyle, style.arrowSize);
+    _drawArrowhead(canvas, dp2, ux, 0, dimColor, style.arrowStyle, style.arrowSize);
 
     // 보조선: 원래 점에서 치수선까지 (수직 방향)
     final extColor = dimColor.withValues(alpha: (isPreview ? 0.6 : 1.0) * 0.5);
@@ -255,8 +255,8 @@ class DimensionPainter extends CustomPainter {
     final uy = vDy > 0 ? 1.0 : -1.0;
 
     _drawDimLine(canvas, dp1, dp2, dimColor, style);
-    _drawArrowhead(canvas, dp1, 0, uy, dimColor, style.arrowStyle, style.arrowSize);
-    _drawArrowhead(canvas, dp2, 0, -uy, dimColor, style.arrowStyle, style.arrowSize);
+    _drawArrowhead(canvas, dp1, 0, -uy, dimColor, style.arrowStyle, style.arrowSize);
+    _drawArrowhead(canvas, dp2, 0, uy, dimColor, style.arrowStyle, style.arrowSize);
 
     // 보조선: 원래 점에서 치수선까지 (수평 방향)
     final extColor = dimColor.withValues(alpha: (isPreview ? 0.6 : 1.0) * 0.5);

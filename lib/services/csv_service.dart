@@ -79,7 +79,7 @@ class CsvService {
             plannedBankRight: _getDoubleValue(row, headerMap['계획제방고_우안']),
             roadbedLeft: _getDoubleValue(row, headerMap['노체_좌안']),
             roadbedRight: _getDoubleValue(row, headerMap['노체_우안']),
-            foundationExcavation: _getDoubleValue(row, headerMap['기초터파기']),
+            foundationLevel: _getDoubleValue(row, headerMap['기초바닥레벨']),
             offsetLeft: _getDoubleValue(row, headerMap['옵셋좌']),
             offsetRight: _getDoubleValue(row, headerMap['옵셋우']),
             lr: _getStringValue(row, headerMap['LR']),
@@ -87,6 +87,7 @@ class CsvService {
             singleCount: _getDoubleValue(row, headerMap['단수']),
             slope: _getDoubleValue(row, headerMap['기울기']),
             angle: _getDoubleValue(row, headerMap['각도']),
+            excavationDepth: _getDoubleValue(row, headerMap['터파기깊이']),
             x: _getDoubleValue(row, headerMap['X']),
             y: _getDoubleValue(row, headerMap['Y']),
             isInterpolated: false, // CSV 원본 데이터는 보간이 아님
