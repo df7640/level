@@ -57,6 +57,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   // 레이어 표시/숨기기
   final Set<String> _hiddenLayers = {};
   bool _showLayerPanel = false;
+  // 레이어별 스타일 오버라이드: { layerName: { 'color': int, 'lw': double } }
+  final Map<String, Map<String, dynamic>> _layerStyles = {};
 
   // 측점 이동 시 사용할 고정 배율
   static const double _stationZoomLevel = 8.0;
@@ -1356,7 +1358,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final data = await DxfService.loadDxfFromAssets('assets/sample_data/test.dxf');
+      final data = await DxfService.loadDxfFromAssets('assets/sample_data/거정천.dxf');
 
       if (data != null) {
         setState(() {
@@ -2870,8 +2872,419 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
               });
             },
           ),
+          // 슬롯 9: 더보기 메뉴
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: Colors.white, size: 20),
+            color: Colors.grey[900],
+            onSelected: (value) {
+              switch (value) {
+                case 'baseline_left':
+                  _generateBaseline(isLeft: true);
+                  break;
+                case 'baseline_right':
+                  _generateBaseline(isLeft: false);
+                  break;
+                case 'baseline_both':
+                  _generateBaseline(isLeft: true);
+                  _generateBaseline(isLeft: false);
+                  break;
+                case 'baseline_clear':
+                  _clearBaselines();
+                  break;
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'baseline_left', child: Text('좌안 기초라인 생성', style: TextStyle(color: Colors.white))),
+              const PopupMenuItem(value: 'baseline_right', child: Text('우안 기초라인 생성', style: TextStyle(color: Colors.white))),
+              const PopupMenuItem(value: 'baseline_both', child: Text('좌안+우안 생성', style: TextStyle(color: Colors.white))),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'baseline_clear', child: Text('기초라인 삭제', style: TextStyle(color: Colors.redAccent))),
+            ],
+          ),
         ],
       ),
+    );
+  }
+
+  // ── 기초라인 생성/삭제 ──
+
+  static const _baselineLayerNames = [
+    '좌안기초라인', '우안기초라인',
+    '좌안기초측점', '우안기초측점',
+    '기초측점텍스트',
+    '센터라인측점', '센터라인측점텍스트',
+    '좌안기초횡단', '우안기초횡단',
+  ];
+
+  /// 세그먼트 길이 (직선 또는 호)
+  double _segLength(double x1, double y1, double x2, double y2, double bulge) {
+    final d = sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
+    if (bulge.abs() < 1e-10) return d;
+    final theta = 4.0 * atan(bulge);
+    return d * theta.abs() / (2.0 * sin(theta / 2.0).abs());
+  }
+
+  /// 세그먼트 위 t(0~1) 위치의 (x, y, 접선각) 반환 (직선/호 모두 지원)
+  ({double x, double y, double tang}) _ptOnSeg(
+    double x1, double y1, double x2, double y2, double bulge, double t,
+  ) {
+    final d = sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
+
+    if (bulge.abs() < 1e-10) {
+      // 직선
+      final px = x1 + t * (x2 - x1);
+      final py = y1 + t * (y2 - y1);
+      final tang = atan2(y2 - y1, x2 - x1);
+      return (x: px, y: py, tang: tang);
+    }
+
+    // 호
+    final theta = 4.0 * atan(bulge);
+    final r = d / (2.0 * sin(theta / 2.0));
+    final mx = (x1 + x2) / 2.0;
+    final my = (y1 + y2) / 2.0;
+    final ma = atan2(y2 - y1, x2 - x1);
+    final cx = mx - r * cos(theta / 2.0) * sin(ma);
+    final cy = my + r * cos(theta / 2.0) * cos(ma);
+    final sa = atan2(y1 - cy, x1 - cx);
+    var ea = atan2(y2 - cy, x2 - cx);
+
+    double ang, tang;
+    if (bulge > 0) {
+      if (ea < sa) ea += 2.0 * pi;
+      ang = sa + t * (ea - sa);
+      tang = ang + pi / 2.0;
+    } else {
+      if (ea > sa) ea -= 2.0 * pi;
+      ang = sa + t * (ea - sa);
+      tang = ang - pi / 2.0;
+    }
+
+    final px = cx + r.abs() * cos(ang);
+    final py = cy + r.abs() * sin(ang);
+    return (x: px, y: py, tang: tang);
+  }
+
+  /// 중심선 폴리라인에서 누가거리 위치의 좌표와 수직 방향을 구함 (호 지원)
+  ({double x, double y, double nx, double ny})? _pointOnCenterline(
+    List<Map<String, dynamic>> clPoints, double targetDist,
+  ) {
+    double accumulated = 0.0;
+    for (int i = 0; i < clPoints.length - 1; i++) {
+      final x1 = (clPoints[i]['x'] as num).toDouble();
+      final y1 = (clPoints[i]['y'] as num).toDouble();
+      final b = ((clPoints[i]['bulge'] as num?) ?? 0.0).toDouble();
+      final x2 = (clPoints[i + 1]['x'] as num).toDouble();
+      final y2 = (clPoints[i + 1]['y'] as num).toDouble();
+
+      final segLen = _segLength(x1, y1, x2, y2, b);
+      if (segLen < 1e-10) continue;
+
+      if (accumulated + segLen >= targetDist - 1e-6) {
+        var t = (targetDist - accumulated) / segLen;
+        if (t > 1.0) t = 1.0;
+        if (t < 0.0) t = 0.0;
+
+        final pt = _ptOnSeg(x1, y1, x2, y2, b, t);
+        // 접선 + 90도 = 좌안 방향 (LISP과 동일)
+        final perp = pt.tang + pi / 2.0;
+        final nx = cos(perp);
+        final ny = sin(perp);
+        return (x: pt.x, y: pt.y, nx: nx, ny: ny);
+      }
+      accumulated += segLen;
+    }
+    return null;
+  }
+
+  /// 중심선 레이어에서 폴리라인 포인트 추출 + 0번 측점까지의 오프셋 거리
+  ({List<Map<String, dynamic>> points, double startOffset})? _getCenterlineData() {
+    if (_dxfData == null) return null;
+    final entities = _dxfData!['entities'] as List;
+    for (final e in entities) {
+      if (e['type'] == 'LWPOLYLINE' && e['layer'] == '#중심선') {
+        var points = (e['points'] as List).cast<Map<String, dynamic>>();
+        if (points.length < 2) return null;
+
+        // 0번 측점 좌표
+        final st0 = widget.stations.firstWhere(
+          (s) => s.distance != null && s.distance! < 1.0 && s.x != null,
+          orElse: () => widget.stations.first,
+        );
+        if (st0.x == null || st0.y == null) {
+          return (points: List.from(points), startOffset: 0.0);
+        }
+
+        // 방향 결정
+        final first = points.first;
+        final last = points.last;
+        final distToFirst = pow((first['x'] as num).toDouble() - st0.x!, 2) +
+            pow((first['y'] as num).toDouble() - st0.y!, 2);
+        final distToLast = pow((last['x'] as num).toDouble() - st0.x!, 2) +
+            pow((last['y'] as num).toDouble() - st0.y!, 2);
+        if (distToLast < distToFirst) {
+          points = points.reversed.toList();
+        }
+
+        // 폴리라인 시작점 → 0번 측점까지의 거리(오프셋) 계산
+        // 가장 가까운 세그먼트 위 거리를 찾음
+        double bestDist = double.infinity;
+        double bestAccum = 0.0;
+        double accumulated = 0.0;
+        for (int i = 0; i < points.length - 1; i++) {
+          final x1 = (points[i]['x'] as num).toDouble();
+          final y1 = (points[i]['y'] as num).toDouble();
+          final b = ((points[i]['bulge'] as num?) ?? 0.0).toDouble();
+          final x2 = (points[i + 1]['x'] as num).toDouble();
+          final y2 = (points[i + 1]['y'] as num).toDouble();
+          final segLen = _segLength(x1, y1, x2, y2, b);
+
+          // 이 세그먼트 위에서 0번 측점에 가장 가까운 점 찾기 (10분할)
+          for (int k = 0; k <= 10; k++) {
+            final t = k / 10.0;
+            final pt = _ptOnSeg(x1, y1, x2, y2, b, t);
+            final dd = (pt.x - st0.x!) * (pt.x - st0.x!) + (pt.y - st0.y!) * (pt.y - st0.y!);
+            if (dd < bestDist) {
+              bestDist = dd;
+              bestAccum = accumulated + segLen * t;
+            }
+          }
+          accumulated += segLen;
+        }
+
+        return (points: List.from(points), startOffset: bestAccum);
+      }
+    }
+    return null;
+  }
+
+  /// DXF layers 리스트에 레이어 추가 (중복 무시)
+  void _ensureDxfLayer(String layerName) {
+    if (_dxfData == null) return;
+    final layers = _dxfData!['layers'] as List;
+    if (!layers.contains(layerName)) {
+      layers.add(layerName);
+    }
+  }
+
+  /// 옵셋 점 계산 (센터라인 위 해당 거리에서 법선 방향으로 offset만큼 이동)
+  ({double x, double y})? _calcOffsetPoint(
+    List<Map<String, dynamic>> clPoints, double dist, double offset, bool isLeft,
+  ) {
+    final pt = _pointOnCenterline(clPoints, dist);
+    if (pt == null) return null;
+    double sign = isLeft ? 1.0 : -1.0;
+    return (x: pt.x + pt.nx * offset * sign, y: pt.y + pt.ny * offset * sign);
+  }
+
+  void _generateBaseline({required bool isLeft}) {
+    final clData = _getCenterlineData();
+    if (clData == null || clData.points.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('중심선 레이어를 찾을 수 없습니다')),
+      );
+      return;
+    }
+    final clPoints = clData.points;
+    final clStartOffset = clData.startOffset;
+
+    final stations = widget.stations;
+    if (stations.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('측점 데이터가 없습니다')),
+      );
+      return;
+    }
+
+    final lineLayer = isLeft ? '좌안기초라인' : '우안기초라인';
+    final pointLayer = isLeft ? '좌안기초측점' : '우안기초측점';
+    final crossLayer = isLeft ? '좌안기초횡단' : '우안기초횡단';
+    const textLayer = '기초측점텍스트';
+    // 좌안: 하늘색, 우안: 주황색
+    final colorInt = isLeft ? 0xFF00BFFF : 0xFFFF8C00;
+
+    final entities = _dxfData!['entities'] as List;
+
+    // 기존 해당 레이어 엔티티 제거
+    entities.removeWhere((e) =>
+      e['layer'] == lineLayer || e['layer'] == pointLayer || e['layer'] == crossLayer);
+    entities.removeWhere((e) =>
+      e['layer'] == textLayer && e['_side'] == (isLeft ? 'L' : 'R'));
+
+    // 레이어 등록
+    for (final l in [lineLayer, pointLayer, crossLayer, textLayer]) {
+      _ensureDxfLayer(l);
+    }
+
+    // 측점 정렬 (누가거리 순)
+    final sorted = stations
+        .where((s) => s.distance != null && (isLeft ? s.offsetLeft : s.offsetRight) != null)
+        .toList()
+      ..sort((a, b) => a.distance!.compareTo(b.distance!));
+
+    if (sorted.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${isLeft ? "좌안" : "우안"} 옵셋 데이터가 없습니다')),
+      );
+      return;
+    }
+
+    // 연속 구간별로 폴리라인 분리 (25m 초과 간격이면 끊기)
+    final segments = <List<({double x, double y, String label})>>[];
+    var currentSeg = <({double x, double y, String label})>[];
+
+    for (int i = 0; i < sorted.length; i++) {
+      final st = sorted[i];
+      final offset = isLeft ? st.offsetLeft! : st.offsetRight!;
+      final actualDist = st.distance! + clStartOffset;
+      final op = _calcOffsetPoint(clPoints, actualDist, offset, isLeft);
+      if (op == null) continue;
+
+      // 25m 초과 간격이면 새 구간
+      if (currentSeg.isNotEmpty && i > 0) {
+        final prevDist = sorted[i - 1].distance!;
+        if (st.distance! - prevDist > 25.0) {
+          segments.add(currentSeg);
+          currentSeg = [];
+        }
+      }
+
+      currentSeg.add((x: op.x, y: op.y, label: st.no));
+
+      // 서클 (반지름 0.2m) - 좌안/우안 기초측점
+      entities.add({
+        'type': 'CIRCLE',
+        'cx': op.x, 'cy': op.y,
+        'radius': 0.2,
+        'layer': pointLayer,
+        'resolvedColor': colorInt,
+      });
+
+      // 측점 텍스트 (아래쪽)
+      entities.add({
+        'type': 'TEXT',
+        'x': op.x, 'y': op.y - 0.5,
+        'text': st.no,
+        'height': 0.8,
+        'layer': textLayer,
+        'resolvedColor': colorInt,
+        '_side': isLeft ? 'L' : 'R',
+      });
+
+      // 횡단선: 센터라인측점에서 법선 방향으로 옵셋 거리만큼 직각선
+      final clPt = _pointOnCenterline(clPoints, actualDist);
+      if (clPt != null) {
+        final s = isLeft ? 1.0 : -1.0;
+        final crossX = clPt.x + clPt.nx * offset * s;
+        final crossY = clPt.y + clPt.ny * offset * s;
+        entities.add({
+          'type': 'LINE',
+          'x1': clPt.x, 'y1': clPt.y,
+          'x2': crossX, 'y2': crossY,
+          'layer': crossLayer,
+          'resolvedColor': colorInt,
+        });
+      }
+    }
+    if (currentSeg.isNotEmpty) segments.add(currentSeg);
+
+    // 각 연속 구간을 LWPOLYLINE으로
+    int totalPoints = 0;
+    for (final seg in segments) {
+      if (seg.length < 2) continue;
+      final polyPoints = seg
+          .map((p) => <String, dynamic>{'x': p.x, 'y': p.y, 'bulge': 0.0})
+          .toList();
+      entities.add({
+        'type': 'LWPOLYLINE',
+        'points': polyPoints,
+        'closed': false,
+        'layer': lineLayer,
+        'resolvedColor': colorInt,
+      });
+      totalPoints += seg.length;
+    }
+
+    // 센터라인측점 생성 (이 side의 측점들에 대해)
+    _generateCenterlineStations(clPoints, clStartOffset, sorted);
+
+    setState(() {
+      _dxfRepaintVersion++;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(
+        '${isLeft ? "좌안" : "우안"} 기초라인 생성 ($totalPoints점, ${segments.length}구간)')),
+    );
+  }
+
+  /// 센터라인 위에 측점 서클 + 텍스트 생성
+  void _generateCenterlineStations(
+    List<Map<String, dynamic>> clPoints,
+    double startOffset,
+    List<StationData> stationsToMark,
+  ) {
+    final entities = _dxfData!['entities'] as List;
+    const clPointLayer = '센터라인측점';
+    const clTextLayer = '센터라인측점텍스트';
+    const clColor = 0xFFFFFF00; // 노란색
+
+    _ensureDxfLayer(clPointLayer);
+    _ensureDxfLayer(clTextLayer);
+
+    // 이미 추가된 센터라인측점의 거리 추적 (중복 방지)
+    final existingDists = <double>{};
+    for (final e in entities) {
+      if (e['layer'] == clPointLayer && e['_dist'] != null) {
+        existingDists.add((e['_dist'] as num).toDouble());
+      }
+    }
+
+    for (final st in stationsToMark) {
+      if (st.distance == null) continue;
+      if (existingDists.contains(st.distance!)) continue;
+
+      final pt = _pointOnCenterline(clPoints, st.distance! + startOffset);
+      if (pt == null) continue;
+
+      existingDists.add(st.distance!);
+
+      // 서클 0.5m
+      entities.add({
+        'type': 'CIRCLE',
+        'cx': pt.x, 'cy': pt.y,
+        'radius': 0.5,
+        'layer': clPointLayer,
+        'resolvedColor': clColor,
+        '_dist': st.distance,
+      });
+
+      // 측점번호 텍스트
+      entities.add({
+        'type': 'TEXT',
+        'x': pt.x, 'y': pt.y - 1.0,
+        'text': st.no,
+        'height': 0.8,
+        'layer': clTextLayer,
+        'resolvedColor': clColor,
+        '_dist': st.distance,
+      });
+    }
+  }
+
+  void _clearBaselines() {
+    if (_dxfData == null) return;
+    final entities = _dxfData!['entities'] as List;
+    final layers = _dxfData!['layers'] as List;
+
+    entities.removeWhere((e) => _baselineLayerNames.contains(e['layer']));
+    layers.removeWhere((l) => _baselineLayerNames.contains(l));
+
+    setState(() {
+      _dxfRepaintVersion++;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('기초라인 삭제 완료')),
     );
   }
 
@@ -3802,6 +4215,125 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     );
   }
 
+  /// 레이어 설정 다이얼로그 (색상, 선 굵기)
+  void _showLayerSettingsDialog(String layer) {
+    final style = _layerStyles[layer] ?? {};
+    double lw = (style['lw'] as double?) ?? 1.0;
+    int? colorVal = style['color'] as int?;
+
+    final presetColors = [
+      (0xFFFFFFFF, '흰색'),
+      (0xFFFF0000, '빨강'),
+      (0xFFFF8C00, '주황'),
+      (0xFFFFFF00, '노랑'),
+      (0xFF7CFC00, '연두'),
+      (0xFF00FF00, '초록'),
+      (0xFF00BFFF, '하늘'),
+      (0xFF0000FF, '파랑'),
+      (0xFFFF00FF, '보라'),
+      (0xFFFF69B4, '분홍'),
+    ];
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              backgroundColor: Colors.grey[850],
+              title: Text(layer, style: const TextStyle(color: Colors.white, fontSize: 14)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('색상', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      // 기본값 (원래 색상)
+                      GestureDetector(
+                        onTap: () => setDialogState(() => colorVal = null),
+                        child: Container(
+                          width: 28, height: 28,
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: colorVal == null ? Colors.cyan : Colors.grey,
+                              width: colorVal == null ? 2 : 1,
+                            ),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Center(
+                            child: Text('원본', style: TextStyle(color: Colors.white54, fontSize: 8)),
+                          ),
+                        ),
+                      ),
+                      ...presetColors.map((c) => GestureDetector(
+                        onTap: () => setDialogState(() => colorVal = c.$1),
+                        child: Container(
+                          width: 28, height: 28,
+                          decoration: BoxDecoration(
+                            color: Color(c.$1),
+                            border: Border.all(
+                              color: colorVal == c.$1 ? Colors.cyan : Colors.transparent,
+                              width: 2,
+                            ),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                      )),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Text('선 굵기: ${lw.toStringAsFixed(1)}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                  Slider(
+                    value: lw,
+                    min: 0.5,
+                    max: 5.0,
+                    divisions: 9,
+                    onChanged: (v) => setDialogState(() => lw = v),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    // 스타일 초기화
+                    setState(() {
+                      _layerStyles.remove(layer);
+                      _dxfRepaintVersion++;
+                    });
+                    Navigator.pop(ctx);
+                  },
+                  child: const Text('초기화'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('취소'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _layerStyles[layer] = {
+                        if (colorVal != null) 'color': colorVal,
+                        'lw': lw,
+                      };
+                      _dxfRepaintVersion++;
+                    });
+                    Navigator.pop(ctx);
+                  },
+                  child: const Text('적용'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   /// 레이어 제어 패널 (하단에서 올라오는 패널)
   Widget _buildLayerPanel() {
     final layers = _layers;
@@ -3884,9 +4416,11 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   ),
                   const SizedBox(width: 8),
                   // 닫기
-                  GestureDetector(
-                    onTap: () => setState(() => _showLayerPanel = false),
-                    child: const Icon(Icons.close, color: Colors.white54, size: 20),
+                  IconButton(
+                    onPressed: () => setState(() => _showLayerPanel = false),
+                    icon: const Icon(Icons.close, color: Colors.white54, size: 20),
+                    padding: const EdgeInsets.all(8),
+                    constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
                   ),
                 ],
               ),
@@ -3905,52 +4439,59 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                       itemBuilder: (context, index) {
                         final layer = layers[index];
                         final isVisible = !_hiddenLayers.contains(layer);
-                        // 해당 레이어의 엔티티 수
                         final entityCount = (_dxfData!['entities'] as List)
                             .where((e) => e['layer'] == layer)
                             .length;
 
-                        return InkWell(
-                          onTap: () {
-
-                            setState(() {
-                              if (isVisible) {
-                                _hiddenLayers.add(layer);
-                              } else {
-                                _hiddenLayers.remove(layer);
-                              }
-                            });
-                        
-                          },
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            child: Row(
-                              children: [
-                                Icon(
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          child: Row(
+                            children: [
+                              // 눈 아이콘 → 표시/비표시 토글
+                              IconButton(
+                                onPressed: () {
+                                  setState(() {
+                                    if (isVisible) {
+                                      _hiddenLayers.add(layer);
+                                    } else {
+                                      _hiddenLayers.remove(layer);
+                                    }
+                                  });
+                                },
+                                icon: Icon(
                                   isVisible ? Icons.visibility : Icons.visibility_off,
                                   size: 18,
                                   color: isVisible ? Colors.cyan : Colors.grey[600],
                                 ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(
-                                    layer,
-                                    style: TextStyle(
-                                      color: isVisible ? Colors.white : Colors.grey[600],
-                                      fontSize: 13,
+                                padding: const EdgeInsets.all(8),
+                                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                              ),
+                              // 레이어 이름 → 설정 다이얼로그
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => _showLayerSettingsDialog(layer),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 8),
+                                    child: Text(
+                                      layer,
+                                      style: TextStyle(
+                                        color: isVisible ? Colors.white : Colors.grey[600],
+                                        fontSize: 13,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                    overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
-                                Text(
-                                  '$entityCount',
-                                  style: TextStyle(
-                                    color: Colors.grey[500],
-                                    fontSize: 11,
-                                  ),
+                              ),
+                              Text(
+                                '$entityCount',
+                                style: TextStyle(
+                                  color: Colors.grey[500],
+                                  fontSize: 11,
                                 ),
-                              ],
-                            ),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
                           ),
                         );
                       },

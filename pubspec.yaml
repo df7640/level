@@ -88,6 +88,7 @@ flutter:
   # 샘플 데이터 파일
   assets:
     - assets/sample_data/1.dxf
+    - assets/sample_data/거정천.dxf
     - assets/sample_data/stations.csv
     - assets/sample_data/test.csv
     - assets/sample_data/test.dxf

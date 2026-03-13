@@ -25,6 +25,9 @@ class UserEntityPainter extends CustomPainter {
         case 'LINE':
           _drawLine(canvas, entity, color, lw);
           break;
+        case 'LWPOLYLINE':
+          _drawLwpolyline(canvas, entity, color, lw);
+          break;
         case 'LEADER':
           _drawLeader(canvas, entity, color, lw);
           break;
@@ -76,6 +79,26 @@ class UserEntityPainter extends CustomPainter {
       case 4: // |
         canvas.drawLine(Offset(cx, cy), Offset(cx, cy - s), paint);
         break;
+    }
+  }
+
+  void _drawLwpolyline(Canvas canvas, Map<String, dynamic> e, Color color, double lw) {
+    final points = e['points'] as List;
+    if (points.length < 2) return;
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = lw
+      ..style = PaintingStyle.stroke;
+    final screenPts = <Offset>[];
+    for (final pt in points) {
+      final p = pt as Map<String, dynamic>;
+      screenPts.add(transformPoint(p['x'] as double, p['y'] as double));
+    }
+    for (int i = 0; i < screenPts.length - 1; i++) {
+      canvas.drawLine(screenPts[i], screenPts[i + 1], paint);
+    }
+    if (e['closed'] == true && screenPts.length > 2) {
+      canvas.drawLine(screenPts.last, screenPts.first, paint);
     }
   }
 
