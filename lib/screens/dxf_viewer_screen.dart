@@ -112,6 +112,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
   int _dxfRepaintVersion = 0; // DxfPainter 강제 repaint 트리거
 
+  // 기초라인 보간 구간: (시작거리, 끝거리, 간격) 목록
+  final List<({double startDist, double endDist, double interval})> _baselineInterpolRanges = [];
+
   // Undo/Redo 스택
   final List<_UndoAction> _undoStack = [];
   final List<_UndoAction> _redoStack = [];
@@ -2888,6 +2891,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   _generateBaseline(isLeft: true);
                   _generateBaseline(isLeft: false);
                   break;
+                case 'baseline_interpol':
+                  _showBaselineInterpolDialog();
+                  break;
                 case 'baseline_clear':
                   _clearBaselines();
                   break;
@@ -2897,6 +2903,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
               const PopupMenuItem(value: 'baseline_left', child: Text('좌안 기초라인 생성', style: TextStyle(color: Colors.white))),
               const PopupMenuItem(value: 'baseline_right', child: Text('우안 기초라인 생성', style: TextStyle(color: Colors.white))),
               const PopupMenuItem(value: 'baseline_both', child: Text('좌안+우안 생성', style: TextStyle(color: Colors.white))),
+              const PopupMenuItem(value: 'baseline_interpol', child: Text('기초라인 보간', style: TextStyle(color: Colors.white))),
               const PopupMenuDivider(),
               const PopupMenuItem(value: 'baseline_clear', child: Text('기초라인 삭제', style: TextStyle(color: Colors.redAccent))),
             ],
@@ -3272,6 +3279,361 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     }
   }
 
+  /// 기초라인 보간 다이얼로그 표시
+  void _showBaselineInterpolDialog() {
+    // offsetLeft 또는 offsetRight가 있는 기본측점만 필터
+    final validStations = widget.stations
+        .where((s) => s.distance != null && (s.offsetLeft != null || s.offsetRight != null))
+        .toList()
+      ..sort((a, b) => a.distance!.compareTo(b.distance!));
+
+    if (validStations.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('보간할 측점이 부족합니다 (최소 2개)')),
+      );
+      return;
+    }
+
+    StationData? startStation = validStations.first;
+    StationData? endStation = validStations.length > 1 ? validStations[1] : null;
+    double interval = 5.0;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) {
+          final startIdx = validStations.indexOf(startStation!);
+          // 끝 측점 후보: 시작 이후 측점들
+          final endCandidates = validStations.sublist(startIdx + 1);
+
+          return AlertDialog(
+            backgroundColor: Colors.grey[900],
+            title: const Text('기초라인 보간', style: TextStyle(color: Colors.white)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('시작 측점', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                DropdownButton<StationData>(
+                  value: startStation,
+                  isExpanded: true,
+                  dropdownColor: Colors.grey[800],
+                  style: const TextStyle(color: Colors.white),
+                  items: validStations.map((s) => DropdownMenuItem(
+                    value: s,
+                    child: Text('${s.no} (${s.distance!.toStringAsFixed(1)}m)'),
+                  )).toList(),
+                  onChanged: (v) {
+                    if (v == null) return;
+                    setDlgState(() {
+                      startStation = v;
+                      final newIdx = validStations.indexOf(v);
+                      final newEnd = validStations.sublist(newIdx + 1);
+                      if (newEnd.isNotEmpty) {
+                        endStation = newEnd.first;
+                      } else {
+                        endStation = null;
+                      }
+                    });
+                  },
+                ),
+                const SizedBox(height: 12),
+                const Text('끝 측점', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                DropdownButton<StationData>(
+                  value: endCandidates.contains(endStation) ? endStation : (endCandidates.isNotEmpty ? endCandidates.first : null),
+                  isExpanded: true,
+                  dropdownColor: Colors.grey[800],
+                  style: const TextStyle(color: Colors.white),
+                  items: endCandidates.map((s) => DropdownMenuItem(
+                    value: s,
+                    child: Text('${s.no} (${s.distance!.toStringAsFixed(1)}m)'),
+                  )).toList(),
+                  onChanged: (v) {
+                    if (v == null) return;
+                    setDlgState(() {
+                      endStation = v;
+                    });
+                  },
+                ),
+                const SizedBox(height: 12),
+                const Text('보간 간격 (m)', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                DropdownButton<double>(
+                  value: interval,
+                  isExpanded: true,
+                  dropdownColor: Colors.grey[800],
+                  style: const TextStyle(color: Colors.white),
+                  items: const [
+                    DropdownMenuItem(value: 2.0, child: Text('2m')),
+                    DropdownMenuItem(value: 5.0, child: Text('5m')),
+                    DropdownMenuItem(value: 10.0, child: Text('10m')),
+                  ],
+                  onChanged: (v) {
+                    if (v == null) return;
+                    setDlgState(() { interval = v; });
+                  },
+                ),
+                if (startStation != null && endStation != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(
+                      '구간: ${(endStation!.distance! - startStation!.distance!).toStringAsFixed(1)}m, '
+                      '보간점: ${((endStation!.distance! - startStation!.distance!) / interval).floor()}개',
+                      style: const TextStyle(color: Colors.greenAccent, fontSize: 12),
+                    ),
+                  ),
+                // 기존 보간 구간 표시
+                if (_baselineInterpolRanges.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  const Text('적용된 보간 구간:', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                  ..._baselineInterpolRanges.map((r) => Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '${r.startDist.toStringAsFixed(1)}m ~ ${r.endDist.toStringAsFixed(1)}m (${r.interval.toStringAsFixed(0)}m)',
+                            style: const TextStyle(color: Colors.amber, fontSize: 12),
+                          ),
+                        ),
+                        GestureDetector(
+                          onTap: () {
+                            setDlgState(() {
+                              _baselineInterpolRanges.remove(r);
+                            });
+                          },
+                          child: const Icon(Icons.close, color: Colors.redAccent, size: 16),
+                        ),
+                      ],
+                    ),
+                  )),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('취소'),
+              ),
+              ElevatedButton(
+                onPressed: (endStation != null && endCandidates.contains(endStation))
+                    ? () {
+                        Navigator.pop(ctx);
+                        _applyBaselineInterpol(startStation!, endStation!, interval);
+                      }
+                    : null,
+                child: const Text('보간 적용'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// 기초라인 보간 적용: 구간 추가 후 기초라인 재생성
+  void _applyBaselineInterpol(StationData start, StationData end, double interval) {
+    final startDist = start.distance!;
+    final endDist = end.distance!;
+
+    // 이미 같은 구간이 있으면 제거 후 재등록
+    _baselineInterpolRanges.removeWhere((r) =>
+      r.startDist == startDist && r.endDist == endDist);
+    _baselineInterpolRanges.add((startDist: startDist, endDist: endDist, interval: interval));
+
+    // 기초라인 재생성 (보간 포함)
+    _generateBaselineWithInterpol(isLeft: true);
+    _generateBaselineWithInterpol(isLeft: false);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(
+        '보간 적용: ${startDist.toStringAsFixed(1)}m ~ ${endDist.toStringAsFixed(1)}m (${interval.toStringAsFixed(0)}m 간격)')),
+    );
+  }
+
+  /// 보간을 포함한 기초라인 생성
+  void _generateBaselineWithInterpol({required bool isLeft}) {
+    final clData = _getCenterlineData();
+    if (clData == null || clData.points.length < 2) return;
+    final clPoints = clData.points;
+    final clStartOffset = clData.startOffset;
+
+    final stations = widget.stations;
+    if (stations.isEmpty) return;
+
+    final lineLayer = isLeft ? '좌안기초라인' : '우안기초라인';
+    final pointLayer = isLeft ? '좌안기초측점' : '우안기초측점';
+    final crossLayer = isLeft ? '좌안기초횡단' : '우안기초횡단';
+    const textLayer = '기초측점텍스트';
+    final colorInt = isLeft ? 0xFF00BFFF : 0xFFFF8C00;
+    const interpolColor = 0xFF00FF80; // 보간점: 연두색
+
+    final entities = _dxfData!['entities'] as List;
+
+    // 기존 해당 레이어 엔티티 제거
+    entities.removeWhere((e) =>
+      e['layer'] == lineLayer || e['layer'] == pointLayer || e['layer'] == crossLayer);
+    entities.removeWhere((e) =>
+      e['layer'] == textLayer && e['_side'] == (isLeft ? 'L' : 'R'));
+
+    for (final l in [lineLayer, pointLayer, crossLayer, textLayer]) {
+      _ensureDxfLayer(l);
+    }
+
+    // 원본 측점 (offset 있는 것만)
+    final sorted = stations
+        .where((s) => s.distance != null && (isLeft ? s.offsetLeft : s.offsetRight) != null)
+        .toList()
+      ..sort((a, b) => a.distance!.compareTo(b.distance!));
+
+    if (sorted.isEmpty) return;
+
+    // 보간점 생성
+    final interpolPoints = <({double dist, double offset, String label})>[];
+    for (final range in _baselineInterpolRanges) {
+      // 이 구간의 시작/끝 측점 찾기
+      StationData? rangeStart, rangeEnd;
+      for (final s in sorted) {
+        if ((s.distance! - range.startDist).abs() < 0.01) rangeStart = s;
+        if ((s.distance! - range.endDist).abs() < 0.01) rangeEnd = s;
+      }
+      if (rangeStart == null || rangeEnd == null) continue;
+
+      final startOffset = isLeft ? rangeStart.offsetLeft : rangeStart.offsetRight;
+      final endOffset = isLeft ? rangeEnd.offsetLeft : rangeEnd.offsetRight;
+      if (startOffset == null || endOffset == null) continue;
+
+      // 구간 내 기존 측점 수집 (보간 앵커로 사용)
+      final anchors = sorted.where((s) =>
+        s.distance! >= range.startDist - 0.01 && s.distance! <= range.endDist + 0.01
+      ).toList();
+
+      // 간격별 보간점 생성
+      final totalLen = range.endDist - range.startDist;
+      final step = range.interval;
+      int count = (totalLen / step).floor();
+
+      for (int i = 1; i <= count; i++) {
+        final targetDist = range.startDist + step * i;
+        if ((targetDist - range.endDist).abs() < 0.01) continue; // 끝점과 겹치면 스킵
+
+        // 기존 측점과 겹치면 스킵
+        bool exists = sorted.any((s) => (s.distance! - targetDist).abs() < 0.5);
+        if (exists) continue;
+
+        // 가장 가까운 앵커 사이에서 선형 보간
+        StationData? before, after;
+        for (final a in anchors) {
+          if (a.distance! <= targetDist + 0.01) before = a;
+        }
+        for (final a in anchors.reversed) {
+          if (a.distance! >= targetDist - 0.01) after = a;
+        }
+        if (before == null || after == null) continue;
+
+        final bOff = isLeft ? before.offsetLeft! : before.offsetRight!;
+        final aOff = isLeft ? after.offsetLeft! : after.offsetRight!;
+        final ratio = (before.distance! == after.distance!)
+            ? 0.0
+            : (targetDist - before.distance!) / (after.distance! - before.distance!);
+        final interpOffset = bOff + (aOff - bOff) * ratio;
+
+        // 측점명: "No.X+Y.YY" 형식
+        final baseNo = (targetDist ~/ 20) * 20;
+        final plus = targetDist - baseNo.toDouble();
+        final label = 'No.${baseNo ~/ 20}+${plus.toStringAsFixed(2)}';
+
+        interpolPoints.add((dist: targetDist, offset: interpOffset, label: label));
+      }
+    }
+
+    // 원본 + 보간점 합쳐서 정렬
+    final allPoints = <({double dist, double offset, String label, bool isInterpol})>[];
+    for (final st in sorted) {
+      final off = isLeft ? st.offsetLeft! : st.offsetRight!;
+      allPoints.add((dist: st.distance!, offset: off, label: st.no, isInterpol: false));
+    }
+    for (final ip in interpolPoints) {
+      allPoints.add((dist: ip.dist, offset: ip.offset, label: ip.label, isInterpol: true));
+    }
+    allPoints.sort((a, b) => a.dist.compareTo(b.dist));
+
+    // 연속 구간별 폴리라인 분리 (25m 초과 간격이면 끊기)
+    final segments = <List<({double x, double y, String label, bool isInterpol})>>[];
+    var currentSeg = <({double x, double y, String label, bool isInterpol})>[];
+
+    for (int i = 0; i < allPoints.length; i++) {
+      final p = allPoints[i];
+      final actualDist = p.dist + clStartOffset;
+      final op = _calcOffsetPoint(clPoints, actualDist, p.offset, isLeft);
+      if (op == null) continue;
+
+      if (currentSeg.isNotEmpty && i > 0) {
+        final prevDist = allPoints[i - 1].dist;
+        if (p.dist - prevDist > 25.0) {
+          segments.add(currentSeg);
+          currentSeg = [];
+        }
+      }
+
+      currentSeg.add((x: op.x, y: op.y, label: p.label, isInterpol: p.isInterpol));
+
+      // 서클
+      entities.add({
+        'type': 'CIRCLE',
+        'cx': op.x, 'cy': op.y,
+        'radius': p.isInterpol ? 0.15 : 0.2,
+        'layer': pointLayer,
+        'resolvedColor': p.isInterpol ? interpolColor : colorInt,
+      });
+
+      // 텍스트 (보간점은 더 작게)
+      entities.add({
+        'type': 'TEXT',
+        'x': op.x, 'y': op.y - 0.5,
+        'text': p.label,
+        'height': p.isInterpol ? 0.5 : 0.8,
+        'layer': textLayer,
+        'resolvedColor': p.isInterpol ? interpolColor : colorInt,
+        '_side': isLeft ? 'L' : 'R',
+      });
+
+      // 횡단선
+      final clPt = _pointOnCenterline(clPoints, actualDist);
+      if (clPt != null) {
+        entities.add({
+          'type': 'LINE',
+          'x1': clPt.x, 'y1': clPt.y,
+          'x2': op.x, 'y2': op.y,
+          'layer': crossLayer,
+          'resolvedColor': p.isInterpol ? interpolColor : colorInt,
+        });
+      }
+    }
+    if (currentSeg.isNotEmpty) segments.add(currentSeg);
+
+    // 폴리라인 생성
+    for (final seg in segments) {
+      if (seg.length < 2) continue;
+      final polyPoints = seg
+          .map((p) => <String, dynamic>{'x': p.x, 'y': p.y, 'bulge': 0.0})
+          .toList();
+      entities.add({
+        'type': 'LWPOLYLINE',
+        'points': polyPoints,
+        'closed': false,
+        'layer': lineLayer,
+        'resolvedColor': colorInt,
+      });
+    }
+
+    // 센터라인측점
+    _generateCenterlineStations(clPoints, clStartOffset, sorted);
+
+    setState(() {
+      _dxfRepaintVersion++;
+    });
+  }
+
   void _clearBaselines() {
     if (_dxfData == null) return;
     final entities = _dxfData!['entities'] as List;
@@ -3279,6 +3641,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
     entities.removeWhere((e) => _baselineLayerNames.contains(e['layer']));
     layers.removeWhere((l) => _baselineLayerNames.contains(l));
+    _baselineInterpolRanges.clear();
 
     setState(() {
       _dxfRepaintVersion++;
