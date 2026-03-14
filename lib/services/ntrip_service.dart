@@ -72,6 +72,8 @@ class NtripService extends ChangeNotifier {
   int _bytesReceived = 0;
   DateTime? _lastDataTime;
   Timer? _reconnectTimer;
+  bool _isChunked = false;
+  final List<int> _chunkBuffer = [];
   bool _shouldAutoReconnect = false;
 
   // 디버그 로그 (앱 화면 표시용)
@@ -98,7 +100,7 @@ class NtripService extends ChangeNotifier {
         // fallback: Download 폴더 직접 접근
         final dlDir = Directory('/storage/emulated/0/Download');
         if (await dlDir.exists()) {
-          _logFilePath = '${dlDir.path}/ntrip_log.txt';
+          _logFilePath = '${dlDir.path}/ntrip_debug.log';
         }
       } else {
         // 외부 저장소의 상위 → Download 폴더
@@ -106,14 +108,14 @@ class NtripService extends ChangeNotifier {
         final segments = dir.path.split('/');
         final emulatedIdx = segments.indexOf('Android');
         if (emulatedIdx > 0) {
-          _logFilePath = '${segments.sublist(0, emulatedIdx).join('/')}/Download/ntrip_log.txt';
+          _logFilePath = '${segments.sublist(0, emulatedIdx).join('/')}/Download/ntrip_debug.log';
         } else {
-          _logFilePath = '${dir.path}/ntrip_log.txt';
+          _logFilePath = '${dir.path}/ntrip_debug.log';
         }
       }
       if (_logFilePath != null) {
         final file = File(_logFilePath!);
-        _logSink = file.openWrite(mode: FileMode.append);
+        _logSink = file.openWrite(mode: FileMode.write);
         final ts = DateTime.now();
         _logSink!.writeln('\n========== 세션 시작 ${ts.toString()} ==========');
         await _logSink!.flush();
@@ -335,8 +337,16 @@ class NtripService extends ChangeNotifier {
             if (bodyStart >= 0) {
               headerParsed = true;
 
+              // Chunked transfer encoding 감지
+              final lowerHeader = headerStr.toLowerCase();
+              if (lowerHeader.contains('transfer-encoding') && lowerHeader.contains('chunked')) {
+                _isChunked = true;
+                _chunkBuffer.clear();
+                _log('⚠️ Chunked Transfer-Encoding 감지 → 디코딩 활성화');
+              }
+
               if (firstLine.contains('200')) {
-                _log('✅ 연결 성공! RTCM 수신 시작');
+                _log('✅ 연결 성공! RTCM 수신 시작 (chunked=$_isChunked)');
                 _state = NtripState.connected;
                 _errorMessage = null;
                 notifyListeners();
@@ -345,7 +355,11 @@ class NtripService extends ChangeNotifier {
                 if (bodyStart < headerBuffer.length) {
                   final rtcmData = Uint8List.fromList(headerBuffer.sublist(bodyStart));
                   _log('초기 RTCM 데이터: ${rtcmData.length}바이트');
-                  _handleRtcmData(rtcmData);
+                  if (_isChunked) {
+                    _handleChunkedData(rtcmData);
+                  } else {
+                    _handleRtcmData(rtcmData);
+                  }
                 }
               } else if (firstLine.contains('401')) {
                 _log('❌ 인증 실패 (401) - ID/비번 확인 필요');
@@ -374,7 +388,11 @@ class NtripService extends ChangeNotifier {
               }
             }
           } else {
-            _handleRtcmData(data);
+            if (_isChunked) {
+              _handleChunkedData(data);
+            } else {
+              _handleRtcmData(data);
+            }
           }
         },
         onDone: () {
@@ -443,6 +461,63 @@ class NtripService extends ChangeNotifier {
 
   /// MSM 메시지 수신 여부 확인 (RTK Fix에 필수)
   bool get hasReceivedMsm => _rtcmTypeCounts.keys.any((t) => t >= 1071 && t <= 1137);
+
+  /// HTTP chunked transfer encoding 디코딩
+  /// 형식: <chunk-size-hex>\r\n<chunk-data>\r\n<chunk-size-hex>\r\n<chunk-data>\r\n...
+  void _handleChunkedData(Uint8List data) {
+    _chunkBuffer.addAll(data);
+
+    while (true) {
+      // \r\n을 찾아서 chunk size 라인 파싱
+      int crlfIdx = -1;
+      for (int i = 0; i < _chunkBuffer.length - 1; i++) {
+        if (_chunkBuffer[i] == 0x0D && _chunkBuffer[i + 1] == 0x0A) {
+          crlfIdx = i;
+          break;
+        }
+      }
+      if (crlfIdx < 0) break; // 아직 완전한 chunk size 라인이 없음
+
+      // chunk size 파싱 (hex)
+      final sizeLine = String.fromCharCodes(_chunkBuffer.sublist(0, crlfIdx)).trim();
+      if (sizeLine.isEmpty) {
+        // 빈 줄 스킵 (이전 chunk 끝의 \r\n)
+        _chunkBuffer.removeRange(0, crlfIdx + 2);
+        continue;
+      }
+
+      final chunkSize = int.tryParse(sizeLine, radix: 16);
+      if (chunkSize == null) {
+        // hex 파싱 실패 → chunk가 아닌 raw RTCM일 수 있음, 그대로 전달
+        final raw = Uint8List.fromList(_chunkBuffer);
+        _chunkBuffer.clear();
+        _handleRtcmData(raw);
+        break;
+      }
+
+      if (chunkSize == 0) {
+        // 마지막 chunk (0\r\n\r\n)
+        _chunkBuffer.clear();
+        break;
+      }
+
+      // chunk data 시작: crlfIdx + 2, 길이: chunkSize
+      final dataStart = crlfIdx + 2;
+      final dataEnd = dataStart + chunkSize;
+
+      if (_chunkBuffer.length < dataEnd) break; // 아직 chunk data가 다 안 옴
+
+      // 순수 RTCM 데이터 추출
+      final rtcmChunk = Uint8List.fromList(_chunkBuffer.sublist(dataStart, dataEnd));
+      _handleRtcmData(rtcmChunk);
+
+      // chunk data 뒤의 \r\n 포함하여 제거
+      final nextStart = dataEnd + ((_chunkBuffer.length > dataEnd + 1 &&
+          _chunkBuffer[dataEnd] == 0x0D && _chunkBuffer[dataEnd + 1] == 0x0A)
+          ? 2 : 0);
+      _chunkBuffer.removeRange(0, nextStart);
+    }
+  }
 
   void _handleRtcmData(Uint8List data) {
     final wasZero = _bytesReceived == 0;

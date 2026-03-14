@@ -56,6 +56,13 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
 
   // 레이어 표시/숨기기
   final Set<String> _hiddenLayers = {};
+  // 시작 시 비활성화할 레이어
+  static const _defaultHiddenLayers = [
+    '#00temp', '#_leftblock', '#기초라인', '#센터라인',
+    '#측점마커&텍스트', '#측점횡단라인',
+    '1-블록기초 측점', '1-센터라인 측점강조',
+    '47-52 5m 간격 횡단라인',
+  ];
   bool _showLayerPanel = false;
   // 레이어별 스타일 오버라이드: { layerName: { 'color': int, 'lw': double } }
   final Map<String, Map<String, dynamic>> _layerStyles = {};
@@ -926,13 +933,20 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   }
 
   /// 페어링된 블루투스 기기 선택 다이얼로그
-  /// GPS 연결 후 NTRIP 자동 연결 (3초 대기 후 GGA 확보되면 연결)
+  /// GPS 연결 후 i70 내부 NTRIP 클라이언트 자동 설정
   void _autoConnectNtrip() {
-    if (_ntripService.isConnected || _ntripService.state == NtripState.connecting) return;
+    debugPrint('[AUTO-NTRIP] 3초 후 i70 내부 NTRIP 설정 예약');
     Future.delayed(const Duration(seconds: 3), () async {
       if (!mounted) return;
-      if (_gnssService.connectionState != GnssConnectionState.connected) return;
-      if (_ntripService.isConnected) return;
+      if (_gnssService.connectionState != GnssConnectionState.connected) {
+        debugPrint('[AUTO-NTRIP] BT 미연결 - 5초 후 재시도');
+        Future.delayed(const Duration(seconds: 5), () {
+          if (mounted && _gnssService.connectionState == GnssConnectionState.connected) {
+            _autoConnectNtrip();
+          }
+        });
+        return;
+      }
 
       // 저장된 설정 또는 기본값 사용
       var config = _ntripService.config;
@@ -946,8 +960,19 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         );
         await config.save();
       }
+
+      // i70 내부 NTRIP 클라이언트 설정 (수신기가 직접 서버 접속)
+      _gnssService.configureReceiverNtrip(
+        host: config.host,
+        port: config.port,
+        mountPoint: config.mountPoint,
+        username: config.username,
+        password: config.password,
+      );
+      _showStatusMessage('i70 NTRIP 설정 전송 중...', Colors.orange);
+
+      // 앱 자체 NTRIP도 병행 연결 (RTCM 릴레이 폴백)
       _ntripService.connect(config);
-      _showStatusMessage('NTRIP 자동 연결 중...', Colors.orange);
     });
   }
 
@@ -1368,6 +1393,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
           _dxfData = data;
           _isLoading = false;
           _hiddenLayers.clear();
+          _applyDefaultHiddenLayers();
           _dimResults.clear();
           _dimFirstPoint = null;
           _dimSecondPoint = null;
@@ -1389,6 +1415,15 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     }
   }
 
+  /// DXF 로드 시 기본 비표시 레이어 적용
+  void _applyDefaultHiddenLayers() {
+    if (_dxfData == null) return;
+    final layers = (_dxfData!['layers'] as List).cast<String>();
+    for (final dl in _defaultHiddenLayers) {
+      if (layers.contains(dl)) _hiddenLayers.add(dl);
+    }
+  }
+
   /// 파일에서 DXF 열기
   Future<void> _openDxfFile() async {
     try {
@@ -1407,6 +1442,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
             _offset = Offset.zero;
             _selectedStation = null;
             _hiddenLayers.clear();
+            _applyDefaultHiddenLayers();
             _showLayerPanel = false;
             _dimResults.clear();
             _dimFirstPoint = null;
@@ -2574,6 +2610,32 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     );
   }
 
+  // 속성 패널 탭 인덱스: 0=속성, 1=측점데이터
+  int _propertyTabIndex = 0;
+
+  /// 선택된 엔티티에서 측점 데이터 찾기
+  StationData? _findStationForEntity(Map<String, dynamic> entity) {
+    final stationNo = entity['_stationNo'] as String?;
+    final dist = (entity['_dist'] as num?)?.toDouble();
+    if (stationNo != null) {
+      final found = widget.stations.where((s) => s.no == stationNo).toList();
+      if (found.isNotEmpty) return found.first;
+    }
+    if (dist != null) {
+      // 거리로 매칭 (0.5m 이내)
+      final found = widget.stations.where((s) =>
+        s.distance != null && (s.distance! - dist).abs() < 0.5).toList();
+      if (found.isNotEmpty) return found.first;
+    }
+    // TEXT 엔티티의 text 필드로 매칭
+    if (entity['type'] == 'TEXT' && entity['text'] != null) {
+      final text = entity['text'] as String;
+      final found = widget.stations.where((s) => s.no == text).toList();
+      if (found.isNotEmpty) return found.first;
+    }
+    return null;
+  }
+
   /// 속성 편집 패널
   Widget _buildPropertyPanel() {
     if (!_showPropertyPanel || _selectedEntities.isEmpty) return const SizedBox.shrink();
@@ -2581,6 +2643,10 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     final count = _selectedEntities.length;
     final firstEntity = _selectedEntities.first;
     final currentColor = Color((firstEntity['resolvedColor'] as int?) ?? 0xFFFFFFFF);
+
+    // 측점 데이터 매칭 시도
+    final stationData = count == 1 ? _findStationForEntity(firstEntity) : null;
+    final hasStationTab = stationData != null;
 
     final colors = [
       (0xFFFF0000, '빨강'),
@@ -2608,13 +2674,12 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 상태 메시지
+            // 상태 메시지 + 버튼 행
             Text(
               '$count개 선택됨 (${firstEntity['type']}${count > 1 ? ' 외' : ''})',
               style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 4),
-            // 버튼 행
             Row(
               children: [
                 _buildPanelActionBtn(Icons.select_all, '유사 선택', Colors.cyan, _selectSimilar),
@@ -2647,65 +2712,163 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                 })),
               ],
             ),
+            // 탭 헤더 (측점 데이터가 있을 때만)
+            if (hasStationTab) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  _buildTabButton('속성', 0),
+                  const SizedBox(width: 4),
+                  _buildTabButton('측점 데이터', 1),
+                ],
+              ),
+            ],
             const SizedBox(height: 8),
-            // 색상 선택
-            const Text('색상', style: TextStyle(color: Colors.white70, fontSize: 12)),
-            const SizedBox(height: 4),
-            Wrap(
-              spacing: 6,
-              children: colors.map((c) {
-                final isSelected = currentColor.toARGB32() == c.$1;
-                return GestureDetector(
-                  onTap: () => _changeSelectedColor(c.$1),
-                  child: Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: Color(c.$1),
-                      border: Border.all(
-                        color: isSelected ? Colors.white : Colors.transparent,
-                        width: 2,
+            // 탭 내용
+            if (!hasStationTab || _propertyTabIndex == 0) ...[
+              // 색상 선택
+              const Text('색상', style: TextStyle(color: Colors.white70, fontSize: 12)),
+              const SizedBox(height: 4),
+              Wrap(
+                spacing: 6,
+                children: colors.map((c) {
+                  final isSelected = currentColor.toARGB32() == c.$1;
+                  return GestureDetector(
+                    onTap: () => _changeSelectedColor(c.$1),
+                    child: Container(
+                      width: 28,
+                      height: 28,
+                      decoration: BoxDecoration(
+                        color: Color(c.$1),
+                        border: Border.all(
+                          color: isSelected ? Colors.white : Colors.transparent,
+                          width: 2,
+                        ),
+                        borderRadius: BorderRadius.circular(4),
                       ),
-                      borderRadius: BorderRadius.circular(4),
                     ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 8),
+              // 선 두께 슬라이더
+              Row(
+                children: [
+                  const Text('선 두께', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${((firstEntity['lw'] as double?) ?? 0.5).toStringAsFixed(1)}px',
+                    style: const TextStyle(color: Colors.cyanAccent, fontSize: 12, fontWeight: FontWeight.bold),
                   ),
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 8),
-            // 선 두께 슬라이더
-            Row(
+                ],
+              ),
+              SliderTheme(
+                data: SliderThemeData(
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                  activeTrackColor: Colors.cyan,
+                  inactiveTrackColor: Colors.grey[700],
+                  thumbColor: Colors.cyanAccent,
+                ),
+                child: Slider(
+                  value: ((firstEntity['lw'] as double?) ?? 0.5).clamp(0.25, 5.0),
+                  min: 0.25,
+                  max: 5.0,
+                  divisions: 19,
+                  onChanged: (v) {
+                    final rounded = (v * 4).round() / 4; // 0.25 단위
+                    _changeSelectedLineWidth(rounded);
+                  },
+                ),
+              ),
+            ] else if (_propertyTabIndex == 1) ...[
+              _buildStationDataView(stationData),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTabButton(String label, int index) {
+    final isActive = _propertyTabIndex == index;
+    return GestureDetector(
+      onTap: () => setState(() => _propertyTabIndex = index),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        decoration: BoxDecoration(
+          color: isActive ? Colors.cyan.withValues(alpha: 0.3) : Colors.transparent,
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(
+            color: isActive ? Colors.cyan : Colors.grey[600]!,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isActive ? Colors.cyanAccent : Colors.white54,
+            fontSize: 12,
+            fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStationDataView(StationData st) {
+    String fmt(double? v) => v != null ? v.toStringAsFixed(3) : '-';
+
+    final rows = <(String, String)>[
+      ('측점', st.no),
+      ('누가거리', fmt(st.distance)),
+      ('지반고', fmt(st.gh)),
+      ('최심하상고', fmt(st.deepestBedLevel)),
+      ('계획하상고', fmt(st.ip)),
+      ('계획홍수위', fmt(st.plannedFloodLevel)),
+      ('좌안제방고', fmt(st.leftBankHeight)),
+      ('우안제방고', fmt(st.rightBankHeight)),
+      ('계획제방고(좌)', fmt(st.plannedBankLeft)),
+      ('계획제방고(우)', fmt(st.plannedBankRight)),
+      ('노체(좌)', fmt(st.roadbedLeft)),
+      ('노체(우)', fmt(st.roadbedRight)),
+      ('기초바닥레벨', fmt(st.foundationLevel)),
+      ('옵셋(좌)', fmt(st.offsetLeft)),
+      ('옵셋(우)', fmt(st.offsetRight)),
+      ('Height', fmt(st.height)),
+      ('단수', fmt(st.singleCount)),
+      ('기울기', fmt(st.slope)),
+      ('각도', fmt(st.angle)),
+      ('터파기깊이', fmt(st.excavationDepth)),
+      ('X', fmt(st.x)),
+      ('Y', fmt(st.y)),
+    ];
+
+    // null이 아닌 값만 표시
+    final filtered = rows.where((r) => r.$2 != '-' || r.$1 == '측점').toList();
+
+    return SizedBox(
+      height: 200,
+      child: ListView.builder(
+        itemCount: filtered.length,
+        padding: EdgeInsets.zero,
+        itemBuilder: (_, i) {
+          final r = filtered[i];
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Row(
               children: [
-                const Text('선 두께', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                const SizedBox(width: 8),
-                Text(
-                  '${((firstEntity['lw'] as double?) ?? 0.5).toStringAsFixed(1)}px',
-                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 12, fontWeight: FontWeight.bold),
+                SizedBox(
+                  width: 100,
+                  child: Text(r.$1, style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                ),
+                Expanded(
+                  child: Text(r.$2, style: const TextStyle(color: Colors.cyanAccent, fontSize: 11, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
-            SliderTheme(
-              data: SliderThemeData(
-                trackHeight: 3,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                activeTrackColor: Colors.cyan,
-                inactiveTrackColor: Colors.grey[700],
-                thumbColor: Colors.cyanAccent,
-              ),
-              child: Slider(
-                value: ((firstEntity['lw'] as double?) ?? 0.5).clamp(0.25, 5.0),
-                min: 0.25,
-                max: 5.0,
-                divisions: 19,
-                onChanged: (v) {
-                  final rounded = (v * 4).round() / 4; // 0.25 단위
-                  _changeSelectedLineWidth(rounded);
-                },
-              ),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -2894,6 +3057,12 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                 case 'baseline_interpol':
                   _showBaselineInterpolDialog();
                   break;
+                case 'levee_points':
+                  _showLeveePointsDialog();
+                  break;
+                case 'levee_clear':
+                  _clearLeveePoints();
+                  break;
                 case 'baseline_clear':
                   _clearBaselines();
                   break;
@@ -2904,8 +3073,10 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
               const PopupMenuItem(value: 'baseline_right', child: Text('우안 기초라인 생성', style: TextStyle(color: Colors.white))),
               const PopupMenuItem(value: 'baseline_both', child: Text('좌안+우안 생성', style: TextStyle(color: Colors.white))),
               const PopupMenuItem(value: 'baseline_interpol', child: Text('기초라인 보간', style: TextStyle(color: Colors.white))),
+              const PopupMenuItem(value: 'levee_points', child: Text('노체포인트 생성', style: TextStyle(color: Colors.white))),
               const PopupMenuDivider(),
               const PopupMenuItem(value: 'baseline_clear', child: Text('기초라인 삭제', style: TextStyle(color: Colors.redAccent))),
+              const PopupMenuItem(value: 'levee_clear', child: Text('노체포인트 삭제', style: TextStyle(color: Colors.redAccent))),
             ],
           ),
         ],
@@ -3165,6 +3336,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         'radius': 0.2,
         'layer': pointLayer,
         'resolvedColor': colorInt,
+        '_stationNo': st.no,
+        '_dist': st.distance,
       });
 
       // 측점 텍스트 (아래쪽)
@@ -3264,6 +3437,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         'layer': clPointLayer,
         'resolvedColor': clColor,
         '_dist': st.distance,
+        '_stationNo': st.no,
       });
 
       // 측점번호 텍스트
@@ -3584,6 +3758,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         'radius': p.isInterpol ? 0.15 : 0.2,
         'layer': pointLayer,
         'resolvedColor': p.isInterpol ? interpolColor : colorInt,
+        '_stationNo': p.label,
+        '_dist': p.dist,
       });
 
       // 텍스트 (보간점은 더 작게)
@@ -3632,6 +3808,598 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     setState(() {
       _dxfRepaintVersion++;
     });
+  }
+
+  // ── 노체포인트 생성 ──
+
+  /// 직선 세그먼트와 레이(반직선)의 교차점
+  /// ray: origin + t * dir (t >= 0)
+  /// segment: p1 → p2
+  /// 교차하면 교차점 반환, 아니면 null
+  ({double x, double y, double t})? _raySegmentIntersect(
+    double ox, double oy, double dx, double dy,
+    double p1x, double p1y, double p2x, double p2y,
+  ) {
+    final ex = p2x - p1x;
+    final ey = p2y - p1y;
+    final denom = dx * ey - dy * ex;
+    if (denom.abs() < 1e-12) return null; // 평행
+
+    final t = ((p1x - ox) * ey - (p1y - oy) * ex) / denom;
+    final s = ((p1x - ox) * dy - (p1y - oy) * dx) / denom;
+
+    if (t < 0 || s < 0 || s > 1) return null;
+    return (x: ox + t * dx, y: oy + t * dy, t: t);
+  }
+
+  /// 호(arc) 세그먼트와 레이의 교차점들
+  List<({double x, double y, double t})> _rayArcIntersect(
+    double ox, double oy, double dx, double dy,
+    double p1x, double p1y, double p2x, double p2y, double bulge,
+  ) {
+    if (bulge.abs() < 1e-10) {
+      final r = _raySegmentIntersect(ox, oy, dx, dy, p1x, p1y, p2x, p2y);
+      return r != null ? [r] : [];
+    }
+
+    // 호 파라미터 계산
+    final d = sqrt(pow(p2x - p1x, 2) + pow(p2y - p1y, 2));
+    if (d < 1e-10) return [];
+    final theta = 4.0 * atan(bulge);
+    final r = (d / (2.0 * sin(theta / 2.0))).abs();
+    final mx = (p1x + p2x) / 2.0;
+    final my = (p1y + p2y) / 2.0;
+    final ma = atan2(p2y - p1y, p2x - p1x);
+    final cx = mx - r * cos(theta / 2.0) * sin(ma);
+    final cy = my + r * cos(theta / 2.0) * cos(ma);
+
+    // 레이-원 교차: |origin + t*dir - center|^2 = r^2
+    final fx = ox - cx;
+    final fy = oy - cy;
+    final a = dx * dx + dy * dy;
+    final b = 2.0 * (fx * dx + fy * dy);
+    final c = fx * fx + fy * fy - r * r;
+    final disc = b * b - 4.0 * a * c;
+    if (disc < 0) return [];
+
+    final results = <({double x, double y, double t})>[];
+    final sqrtDisc = sqrt(disc);
+
+    for (final sign in [-1.0, 1.0]) {
+      final t = (-b + sign * sqrtDisc) / (2.0 * a);
+      if (t < 0) continue;
+      final ix = ox + t * dx;
+      final iy = oy + t * dy;
+
+      // 교차점이 호 범위 내인지 확인
+      final ia = atan2(iy - cy, ix - cx);
+      final sa = atan2(p1y - cy, p1x - cx);
+      var ea = atan2(p2y - cy, p2x - cx);
+
+      bool onArc;
+      if (bulge > 0) {
+        if (ea < sa) ea += 2.0 * pi;
+        var nia = ia;
+        if (nia < sa) nia += 2.0 * pi;
+        onArc = nia >= sa - 1e-6 && nia <= ea + 1e-6;
+      } else {
+        if (ea > sa) ea -= 2.0 * pi;
+        var nia = ia;
+        if (nia > sa) nia -= 2.0 * pi;
+        onArc = nia <= sa + 1e-6 && nia >= ea - 1e-6;
+      }
+
+      if (onArc) {
+        results.add((x: ix, y: iy, t: t));
+      }
+    }
+    return results;
+  }
+
+  /// 레이와 DXF 엔티티(LINE, LWPOLYLINE)의 교차점들
+  List<({double x, double y, double t})> _rayEntityIntersections(
+    double ox, double oy, double dx, double dy,
+    Map<String, dynamic> entity,
+  ) {
+    final type = entity['type'] as String?;
+    final results = <({double x, double y, double t})>[];
+
+    if (type == 'LINE') {
+      final x1 = (entity['x1'] as num).toDouble();
+      final y1 = (entity['y1'] as num).toDouble();
+      final x2 = (entity['x2'] as num).toDouble();
+      final y2 = (entity['y2'] as num).toDouble();
+      final r = _raySegmentIntersect(ox, oy, dx, dy, x1, y1, x2, y2);
+      if (r != null) results.add(r);
+    } else if (type == 'LWPOLYLINE') {
+      final points = entity['points'] as List;
+      final closed = entity['closed'] == true;
+      final count = closed ? points.length : points.length - 1;
+      for (int i = 0; i < count; i++) {
+        final p1 = points[i] as Map<String, dynamic>;
+        final p2 = points[(i + 1) % points.length] as Map<String, dynamic>;
+        final bulge = ((p1['bulge'] as num?) ?? 0.0).toDouble();
+        final x1 = (p1['x'] as num).toDouble();
+        final y1 = (p1['y'] as num).toDouble();
+        final x2 = (p2['x'] as num).toDouble();
+        final y2 = (p2['y'] as num).toDouble();
+        results.addAll(_rayArcIntersect(ox, oy, dx, dy, x1, y1, x2, y2, bulge));
+      }
+    }
+    return results;
+  }
+
+  /// 노체포인트 생성 다이얼로그
+  void _showLeveePointsDialog() {
+    if (_dxfData == null) return;
+    final allLayers = (_dxfData!['layers'] as List).cast<String>()
+      ..sort();
+
+    // 기본 선택: 제방 관련 레이어 자동 선택
+    final targetLayers = <String>{};
+    for (final l in allLayers) {
+      if (l.contains('제방') || l.contains('LEVEE') || l.contains('BANK')) {
+        targetLayers.add(l);
+      }
+    }
+
+    final validStations = widget.stations
+        .where((s) => s.distance != null)
+        .toList()
+      ..sort((a, b) => a.distance!.compareTo(b.distance!));
+    if (validStations.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('측점 데이터가 부족합니다')),
+      );
+      return;
+    }
+
+    StationData startStation = validStations.first;
+    StationData endStation = validStations.last;
+    double nocheOffset = 0.6; // 노체 오프셋 (m)
+    double minDist = 5.0; // 최소 교차 거리 (센터라인에서, m)
+    bool connectLines = true;
+    bool showCircles = true;
+    bool showCrossLines = false; // 노체횡단라인
+    int interpolInterval = 0; // 0=없음, 1=1m, 5=5m
+    int color = 0xFFFF00FF; // 마젠타
+    double lineWidth = 1.0;
+    String outputLayer = '노체포인트';
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) {
+          return AlertDialog(
+            backgroundColor: Colors.grey[900],
+            title: const Text('노체포인트 생성', style: TextStyle(color: Colors.white, fontSize: 16)),
+            content: SizedBox(
+              width: 400,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 교차 대상 레이어
+                    const Text('교차 대상 레이어', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                    const SizedBox(height: 4),
+                    Container(
+                      height: 120,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey[700]!),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: ListView(
+                        padding: EdgeInsets.zero,
+                        children: allLayers.map((l) => CheckboxListTile(
+                          dense: true,
+                          visualDensity: VisualDensity.compact,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                          title: Text(l, style: const TextStyle(color: Colors.white, fontSize: 11)),
+                          value: targetLayers.contains(l),
+                          onChanged: (v) => setDlgState(() {
+                            if (v == true) targetLayers.add(l);
+                            else targetLayers.remove(l);
+                          }),
+                          activeColor: Colors.cyan,
+                        )).toList(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // 시작/끝 측점
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('시작', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                              DropdownButton<StationData>(
+                                value: startStation,
+                                isExpanded: true,
+                                dropdownColor: Colors.grey[800],
+                                style: const TextStyle(color: Colors.white, fontSize: 12),
+                                items: validStations.map((s) => DropdownMenuItem(
+                                  value: s, child: Text(s.no),
+                                )).toList(),
+                                onChanged: (v) { if (v != null) setDlgState(() => startStation = v); },
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('끝', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                              DropdownButton<StationData>(
+                                value: endStation,
+                                isExpanded: true,
+                                dropdownColor: Colors.grey[800],
+                                style: const TextStyle(color: Colors.white, fontSize: 12),
+                                items: validStations.map((s) => DropdownMenuItem(
+                                  value: s, child: Text(s.no),
+                                )).toList(),
+                                onChanged: (v) { if (v != null) setDlgState(() => endStation = v); },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    // 최소 교차 거리
+                    Row(
+                      children: [
+                        const Text('최소 거리', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                        const SizedBox(width: 8),
+                        Text('${minDist.toStringAsFixed(1)}m',
+                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                        const SizedBox(width: 8),
+                        const Text('(가까운 엔티티 무시)', style: TextStyle(color: Colors.white38, fontSize: 10)),
+                      ],
+                    ),
+                    Slider(
+                      value: minDist,
+                      min: 1.0, max: 30.0, divisions: 29,
+                      onChanged: (v) => setDlgState(() => minDist = (v * 10).round() / 10.0),
+                    ),
+                    // 노체 오프셋
+                    Row(
+                      children: [
+                        const Text('노체 오프셋', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                        const SizedBox(width: 8),
+                        Text('${nocheOffset.toStringAsFixed(2)}m',
+                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    Slider(
+                      value: nocheOffset,
+                      min: 0.1, max: 2.0, divisions: 19,
+                      onChanged: (v) => setDlgState(() => nocheOffset = (v * 100).round() / 100.0),
+                    ),
+                    const SizedBox(height: 8),
+                    // 보간 간격
+                    const Text('보간', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                    Row(
+                      children: [
+                        for (final iv in [(0, '없음'), (1, '1m'), (5, '5m')])
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: ChoiceChip(
+                              label: Text(iv.$2, style: const TextStyle(fontSize: 11)),
+                              selected: interpolInterval == iv.$1,
+                              selectedColor: Colors.cyan,
+                              onSelected: (_) => setDlgState(() => interpolInterval = iv.$1),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // 옵션 토글
+                    Row(
+                      children: [
+                        Expanded(
+                          child: CheckboxListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text('라인 연결', style: TextStyle(color: Colors.white, fontSize: 11)),
+                            value: connectLines,
+                            onChanged: (v) => setDlgState(() => connectLines = v ?? true),
+                            activeColor: Colors.cyan,
+                          ),
+                        ),
+                        Expanded(
+                          child: CheckboxListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text('서클 표시', style: TextStyle(color: Colors.white, fontSize: 11)),
+                            value: showCircles,
+                            onChanged: (v) => setDlgState(() => showCircles = v ?? true),
+                            activeColor: Colors.cyan,
+                          ),
+                        ),
+                      ],
+                    ),
+                    CheckboxListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('노체횡단라인 (센터→노체)', style: TextStyle(color: Colors.white, fontSize: 11)),
+                      value: showCrossLines,
+                      onChanged: (v) => setDlgState(() => showCrossLines = v ?? false),
+                      activeColor: Colors.cyan,
+                    ),
+                    const SizedBox(height: 8),
+                    // 색상
+                    const Text('색상', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      children: [
+                        (0xFFFF0000, '빨강'), (0xFF00FF00, '초록'), (0xFF00FFFF, '시안'),
+                        (0xFFFFFF00, '노랑'), (0xFFFF00FF, '마젠타'), (0xFFFF8000, '주황'),
+                        (0xFFFFFFFF, '흰색'), (0xFF00FF80, '연두'),
+                      ].map((c) => GestureDetector(
+                        onTap: () => setDlgState(() => color = c.$1),
+                        child: Container(
+                          width: 24, height: 24,
+                          decoration: BoxDecoration(
+                            color: Color(c.$1),
+                            border: Border.all(
+                              color: color == c.$1 ? Colors.white : Colors.transparent, width: 2),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                      )).toList(),
+                    ),
+                    const SizedBox(height: 8),
+                    // 선 두께
+                    Row(
+                      children: [
+                        const Text('선 두께', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                        const SizedBox(width: 8),
+                        Text('${lineWidth.toStringAsFixed(1)}',
+                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    Slider(
+                      value: lineWidth, min: 0.5, max: 3.0, divisions: 10,
+                      onChanged: (v) => setDlgState(() => lineWidth = (v * 4).round() / 4.0),
+                    ),
+                    // 레이어명
+                    Row(
+                      children: [
+                        const Text('생성 레이어: ', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                        Expanded(
+                          child: TextField(
+                            controller: TextEditingController(text: outputLayer),
+                            style: const TextStyle(color: Colors.white, fontSize: 12),
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                              border: OutlineInputBorder(),
+                            ),
+                            onChanged: (v) => outputLayer = v,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('취소'),
+              ),
+              ElevatedButton(
+                onPressed: targetLayers.isEmpty ? null : () {
+                  Navigator.pop(ctx);
+                  _generateLeveePoints(
+                    targetLayers: targetLayers,
+                    startDist: startStation.distance!,
+                    endDist: endStation.distance!,
+                    nocheOffset: nocheOffset,
+                    minDist: minDist,
+                    connectLines: connectLines,
+                    showCircles: showCircles,
+                    showCrossLines: showCrossLines,
+                    interpolInterval: interpolInterval,
+                    color: color,
+                    lineWidth: lineWidth,
+                    outputLayer: outputLayer,
+                  );
+                },
+                child: const Text('생성'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// 노체포인트 생성 실행
+  void _generateLeveePoints({
+    required Set<String> targetLayers,
+    required double startDist,
+    required double endDist,
+    required double nocheOffset,
+    required double minDist,
+    required bool connectLines,
+    required bool showCircles,
+    required bool showCrossLines,
+    required int interpolInterval,
+    required int color,
+    required double lineWidth,
+    required String outputLayer,
+  }) {
+    final clData = _getCenterlineData();
+    if (clData == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('중심선을 찾을 수 없습니다')),
+      );
+      return;
+    }
+    final clPoints = clData.points;
+    final clStartOffset = clData.startOffset;
+
+    // 교차 대상 엔티티 수집
+    final entities = _dxfData!['entities'] as List;
+    final targetEntities = entities.where((e) {
+      final layer = e['layer'] as String? ?? '';
+      final type = e['type'] as String? ?? '';
+      return targetLayers.contains(layer) &&
+             (type == 'LINE' || type == 'LWPOLYLINE');
+    }).toList();
+
+    if (targetEntities.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('선택된 레이어에 LINE/POLYLINE이 없습니다')),
+      );
+      return;
+    }
+
+    // 처리할 거리 목록 생성
+    final dMin = min(startDist, endDist);
+    final dMax = max(startDist, endDist);
+    final distances = <double>[];
+
+    // 기본 측점 거리
+    for (final st in widget.stations) {
+      if (st.distance != null && st.distance! >= dMin - 0.01 && st.distance! <= dMax + 0.01) {
+        distances.add(st.distance!);
+      }
+    }
+
+    // 보간 거리 추가
+    if (interpolInterval > 0) {
+      final step = interpolInterval.toDouble();
+      double d = (dMin / step).ceil() * step;
+      while (d <= dMax + 0.01) {
+        if (!distances.any((existing) => (existing - d).abs() < 0.5)) {
+          distances.add(d);
+        }
+        d += step;
+      }
+    }
+    distances.sort();
+
+    if (distances.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('범위 내 측점이 없습니다')),
+      );
+      return;
+    }
+
+    // 레이어 등록
+    _ensureDxfLayer(outputLayer);
+    // 기존 해당 레이어 제거
+    entities.removeWhere((e) => e['layer'] == outputLayer);
+
+    // 각 측점에서 교차점 계산 (좌안/우안 첫 번째 교차)
+    final leftNochePoints = <({double x, double y})>[];
+    final rightNochePoints = <({double x, double y})>[];
+
+    int pointCount = 0;
+
+    if (showCrossLines) _ensureDxfLayer('노체횡단라인');
+
+    for (final dist in distances) {
+      final actualDist = dist + clStartOffset;
+      final clPt = _pointOnCenterline(clPoints, actualDist);
+      if (clPt == null) continue;
+
+      for (final isLeft in [true, false]) {
+        final dirX = isLeft ? clPt.nx : -clPt.nx;
+        final dirY = isLeft ? clPt.ny : -clPt.ny;
+
+        // 모든 대상 엔티티와 교차점 구하기 (최소 거리 이상만)
+        final hits = <({double x, double y, double t})>[];
+        for (final ent in targetEntities) {
+          for (final h in _rayEntityIntersections(clPt.x, clPt.y, dirX, dirY, ent)) {
+            if (h.t >= minDist) hits.add(h);
+          }
+        }
+        if (hits.isEmpty) continue;
+
+        // t 기준 정렬 (센터라인에서 가까운 순) → 첫 번째 = 제방상단
+        hits.sort((a, b) => a.t.compareTo(b.t));
+
+        final leveePt = (x: hits[0].x, y: hits[0].y);
+        // 노체 = 제방상단에서 센터라인 방향으로 nocheOffset
+        final nochePt = (x: leveePt.x - dirX * nocheOffset,
+                         y: leveePt.y - dirY * nocheOffset);
+
+        if (isLeft) {
+          leftNochePoints.add(nochePt);
+        } else {
+          rightNochePoints.add(nochePt);
+        }
+
+        // 서클 표시
+        if (showCircles) {
+          entities.add({
+            'type': 'CIRCLE', 'cx': nochePt.x, 'cy': nochePt.y,
+            'radius': 0.15, 'layer': outputLayer, 'resolvedColor': color,
+          });
+        }
+        // 노체횡단라인: 센터라인 → 노체포인트
+        if (showCrossLines) {
+          entities.add({
+            'type': 'LINE',
+            'x1': clPt.x, 'y1': clPt.y,
+            'x2': nochePt.x, 'y2': nochePt.y,
+            'layer': '노체횡단라인',
+            'resolvedColor': color,
+            'lw': lineWidth,
+          });
+        }
+        pointCount++;
+      }
+    }
+
+    // 라인 연결 (좌안/우안 별도)
+    if (connectLines) {
+      for (final ptList in [leftNochePoints, rightNochePoints]) {
+        if (ptList.length < 2) continue;
+        final polyPoints = ptList
+            .map((p) => <String, dynamic>{'x': p.x, 'y': p.y, 'bulge': 0.0})
+            .toList();
+        entities.add({
+          'type': 'LWPOLYLINE',
+          'points': polyPoints,
+          'closed': false,
+          'layer': outputLayer,
+          'resolvedColor': color,
+          'lw': lineWidth,
+        });
+      }
+    }
+
+    setState(() {
+      _dxfRepaintVersion++;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('노체포인트 생성 완료 ($pointCount개)')),
+    );
+  }
+
+  void _clearLeveePoints() {
+    if (_dxfData == null) return;
+    final entities = _dxfData!['entities'] as List;
+    final layers = _dxfData!['layers'] as List;
+    // 노체포인트 레이어 및 노체횡단라인 레이어 제거
+    final leveeLayerNames = ['노체포인트', '노체횡단라인'];
+    entities.removeWhere((e) => leveeLayerNames.contains(e['layer']));
+    layers.removeWhere((l) => leveeLayerNames.contains(l));
+    setState(() => _dxfRepaintVersion++);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('노체포인트 삭제 완료')),
+    );
   }
 
   void _clearBaselines() {

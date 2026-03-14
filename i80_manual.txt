@@ -1,0 +1,2284 @@
+=== Page 1 ===
+Safety Information
+il
+CHC® i80 GNSS Receiver
+Revision 1.0
+May 2015
+
+=== Page 2 ===
+Copyright
+Copyright 2014-2015 CHC | Shanghai HuaCe
+Navigation Technology Ltd. All rights reserved. The
+CHC are trademark of Shanghai HuaCe Navigation
+Technology Limited. All other trademarks are the
+property of their respective owners.
+Trademarks
+All product and brand names mentioned in this
+publication are trademarks of their respective
+holders.
+Safety Warnings
+The Global Positioning System (GPS) is operated by
+the U.S. Government, which is solely responsible
+for the accuracy and maintenance of the GPS
+network. Accuracy can also be affected by poor
+satellite geometry and obstructions, like buildings
+and heavy canopy.
+FCC interference statement
+This equipment has been designed to comply with
+the limits for a Class B digital device, pursuant to
+part 15 of the FCC Rules in the Portable Mode.
+These limits are designed to provide reasonable
+protection against harmful interference in a
+residential installation.
+Operation is subject to the following two
+conditions: (1) this device may not cause harmful
+interference and (2) this device must accept any
+interference received, including interference that
+may cause undesired operation.
+i80 GNSS Receiver User Guide – Revision 1.0 May 2015
+Written by January LEE
+
+=== Page 3 ===
+CONTENTS
+1. Introduction ................................................................................................................................................. 4
+1.1. Safety information ............................................................................................................................ 4
+1.1.1. Warnings and cautions .......................................................................................................... 4
+1.1.2. Regulations and safety ........................................................................................................... 4
+1.1.3. Use and Care .......................................................................................................................... 5
+1.2. Technical support .............................................................................................................................. 5
+1.3. Disclaimer ......................................................................................................................................... 5
+1.4. Your comments ................................................................................................................................. 5
+2. Getting started with i80 ............................................................................................................................... 6
+2.1. About the receiver ............................................................................................................................ 6
+2.2. Parts of the receiver.......................................................................................................................... 6
+2.2.1. Front panel ............................................................................................................................. 6
+2.2.2. Lower housing........................................................................................................................ 8
+2.2.3. Receiver ports ........................................................................................................................ 8
+2.3. Batteries and power ......................................................................................................................... 9
+2.3.1. Internal batteries ................................................................................................................... 9
+2.3.1.1. Charging the battery ................................................................................................... 9
+2.3.1.2. Battery safe ............................................................................................................... 10
+2.3.2. External power supply ......................................................................................................... 10
+2.4. Inserting battery and SIM card ....................................................................................................... 11
+2.5. Product basic supply accessories .................................................................................................... 12
+2.5.1. Base kit basic supply ............................................................................................................ 12
+2.5.2. Rover kit basic supply .......................................................................................................... 13
+2.6. Connecting to an office computer .................................................................................................. 14
+2.7. Connecting to a controller .............................................................................................................. 15
+2.7.1. Connecting via Wi-Fi with Hcconfig software ...................................................................... 15
+2.7.2. Connecting via Bluetooth with Hcconfig software .............................................................. 17
+2.7.2.1. Via system Bluetooth ................................................................................................ 17
+2.7.2.2. Via CHC Bluetooth .................................................................................................... 19
+2.7.3. Connecting via Wi-Fi with LandStar 6 software ................................................................... 20
+2.7.4. Connecting via Bluetooth with LandStar 6 software ........................................................... 22
+2.8. Connecting to a USB drive .............................................................................................................. 23
+2.8.1. For data logging ................................................................................................................... 24
+2.8.2. For firmware upgrade .......................................................................................................... 25
+2.9. Downloading logged data ............................................................................................................... 25
+3. Front panel operation ................................................................................................................................ 27
+3.1. Main operation menus ................................................................................................................... 27
+3.2. Configure the working mode .......................................................................................................... 29
+4. Base station setup and operation .............................................................................................................. 34
+4.1. Base station setup guidelines ......................................................................................................... 34
+4.2. Outputting corrections using internal radio modem ...................................................................... 35
+4.2.1. Base station setup ................................................................................................................ 35
+i80 GNSS Receiver User Guide  Page 1
+
+=== Page 4 ===
+4.2.2. Configuring the base station ................................................................................................ 36
+4.2.2.1. Configuring via Hcconfig software ............................................................................ 36
+4.2.2.2. Configuring via LandStar 6 software ......................................................................... 37
+4.3. Outputting corrections using external radio ................................................................................... 38
+4.3.1. Base station setup ................................................................................................................ 38
+4.3.2. Configuring the base station ................................................................................................ 39
+4.3.2.1. Configuring via Hcconfig software ............................................................................ 39
+4.3.2.2. Configuring via LandStar 6 software ......................................................................... 40
+5. Rover station setup and operation ............................................................................................................ 42
+5.1. Rover station setup guidelines ........................................................................................................ 42
+5.2. Rover station setup ......................................................................................................................... 43
+5.3. Configuring the rover station via LandStar 6 software ................................................................... 43
+5.3.1. Receiving corrections using internal radio modem ............................................................. 43
+5.3.2. Receiving corrections using internal cellular modem .......................................................... 45
+5.3.3. Receiving corrections using cellular modem in the controller ............................................. 48
+6. Survey with LandStar 6 software ............................................................................................................... 51
+6.1. New project .................................................................................................................................... 51
+6.2. Key in points ................................................................................................................................... 54
+6.3. Measure points ............................................................................................................................... 55
+6.3.1. Measure points in conventional mode ................................................................................ 55
+6.3.2. Survey with tilt sensor ......................................................................................................... 58
+6.3.2.1. Calibrating the tilt sensor ......................................................................................... 59
+6.3.2.2. Measure points in compensated mode .................................................................... 61
+6.4. Point adjust (Site calibration) .......................................................................................................... 64
+6.5. Base shift ........................................................................................................................................ 69
+6.6. Data export ..................................................................................................................................... 71
+6.7. Receiver registration ....................................................................................................................... 72
+7. Configuring through a web browser .......................................................................................................... 74
+7.1. Status menu .................................................................................................................................... 75
+7.1.1. Position submenu ................................................................................................................ 76
+7.1.2. Operation submenu ............................................................................................................. 76
+7.1.3. Google Map submenu ......................................................................................................... 77
+7.2. Satellites menu ............................................................................................................................... 78
+7.2.1. Satellite Track Table submenu ............................................................................................. 78
+7.2.2. Satellite Track Diagram submenu ........................................................................................ 78
+7.2.3. SkyPlot submenu ................................................................................................................. 79
+7.3. Receiver Settings menu .................................................................................................................. 79
+7.3.1. Introduction submenu ......................................................................................................... 80
+7.3.2. Antenna Param Settings submenu ....................................................................................... 80
+7.3.3. Reference Station Settings submenu ................................................................................... 81
+7.3.4. Receiver Reset submenu ...................................................................................................... 82
+7.3.5. Languages submenu ............................................................................................................ 83
+7.4. Data Recording menu ..................................................................................................................... 83
+7.4.1. Log Settings submenu .......................................................................................................... 83
+i80 GNSS Receiver User Guide  Page 2
+
+=== Page 5 ===
+7.4.2. FTP Push Settings submenu ................................................................................................. 85
+7.4.3. FTP Push Recording submenu .............................................................................................. 86
+7.4.4. Data Download submenu .................................................................................................... 86
+7.5. IO Settings menu ............................................................................................................................ 87
+7.5.1. IO Settings submenu ............................................................................................................ 87
+7.6. GPRS menu ..................................................................................................................................... 92
+7.6.1. Network Info submenu ........................................................................................................ 92
+7.6.2. Network Set submenu ......................................................................................................... 92
+7.7. Wifi menu ....................................................................................................................................... 93
+7.7.1. Wifi Info submenu ............................................................................................................... 93
+7.7.2. Wifi Settings submenu ......................................................................................................... 94
+7.8. Bluetooth Set menu ........................................................................................................................ 94
+7.8.1. Bluetooth Set submenu ....................................................................................................... 94
+7.9. Radio Settings menu ....................................................................................................................... 94
+7.9.1. Radio Info submenu ............................................................................................................. 95
+7.9.2. Radio Settings submenu ...................................................................................................... 95
+7.10. Network Service menu ................................................................................................................. 95
+7.10.1. HTTP submenu ................................................................................................................... 96
+7.10.2. FTP Service submenu ......................................................................................................... 96
+7.11. Firmware menu ............................................................................................................................ 96
+7.11.1. Firmware Info submenu .................................................................................................... 97
+7.11.2. System Log submenu ......................................................................................................... 97
+7.11.3. Firmware Update submenu ............................................................................................... 97
+7.11.4. Config File submenu .......................................................................................................... 98
+7.11.5. GNSS Registration submenu .............................................................................................. 98
+7.11.6. The Hardware Version submenu ....................................................................................... 98
+A. Communication ports definition ............................................................................................................. 100
+A.I. CHC i80 receiver IO port (7-pin Lemo port) definition .................................................................. 100
+A.II. CHC i80 receiver USB port (7-pin Lemo port) definition .............................................................. 100
+i80 GNSS Receiver User Guide  Page 3
+
+=== Page 6 ===
+1. INTRODUCTION
+The i80 GNSS Receiver User Guide describes how to set up and use the CHC®
+i80 GNSS receiver.
+In this manual, “the receiver” refers to the i80 GNSS receiver unless
+otherwise stated.
+Even if you have used other Global Navigation Satellite Systems (GNSS)
+products before, CHC recommends that you spend some time reading this
+manual to learn about the special features of this product. If you are not
+familiar with GNSS, go to www.chcnav.com for an interactive look at CHC
+and GNSS.
+1.1. SAFETY INFORMATION
+1.1.1. WARNINGS AND CAUTIONS
+An absence of specific alerts does not mean that there are no safety risks
+involved.
+A Warning or Caution information is intended to minimize the risk of
+personal injury and/or damage to the equipment.
+WARNING - A Warning alerts you to a potential misused or wrong setting of
+the equipment.
+CAUTION - A Caution alerts you to a possible risk of serious injury to your
+person and/or damage to the equipment.
+1.1.2. REGULATIONS AND SAFETY
+The receivers contain a built-in wireless modem for signal communication
+through Bluetooth® wireless technology or through external communication
+datalink. Regulations regarding the use of the wireless modem vary greatly
+from country to country. In some countries, the unit can be used without
+obtaining an end-user license. However, in some countries, the
+administrative permissions are required. For license information, consult
+your local dealer. Bluetooth® operates in license-free bands.
+Before operating a i80 GNSS receiver, determine if authorization or a license
+to operate the unit is required in your country. It is the responsibility of the
+end-user to obtain an operator's permit or license for the receiver for the
+location or country of use.
+i80 GNSS Receiver User Guide  Page 4
+
+=== Page 7 ===
+1. Introduction
+1.1.3. USE AND CARE
+This receiver is designed to withstand the rough environment that typically
+occurs in the field. However, the receiver is high-precision electronic
+equipment and should be treated with reasonable care.
+CAUTION - Operating or storing the receiver outside the specified
+temperature range will cause irreversible damage.
+1.2. TECHNICAL SUPPORT
+If you have a problem and cannot find the information you need in this
+manual or CHC website (www.chcnav.com), contact your local CHC dealer
+from which you purchased the receiver(s).
+If you need to contact CHC technical support, please contact us by email
+(support@chcnav.com) or Skype (chc_support).
+1.3. DISCLAIMER
+Before using the receiver, please make sure that you have read and
+understood this User Guide, as well as the safety information. CHC holds no
+responsibility for the wrong operation by users and for the losses incurred by
+the wrong understanding about this User Guide. However, CHC reserves the
+rights to update and optimize the contents in this guide regularly. Please
+contact your local CHC dealer for new information.
+1.4. YOUR COMMENTS
+Your feedback about this user guide will help us to improve it in future
+revision. Please email your comments to support@chcnav.com.
+i80 GNSS Receiver User Guide  Page 5
+
+=== Page 8 ===
+2. GETTING STARTED WITH I80
+2.1. ABOUT THE RECEIVER
+The i80 GNSS receiver incorporates a GNSS engine, GNSS antenna, internal
+radio, optional 4G cellular modem, Bluetooth, Wi-Fi, and dual-battery in a
+ruggedized and miniature unit that is easy for you to set up an all-in-one RTK
+rover or mobile base station.
+The LCD panel enables you to check satellite-tracking status, internal battery
+status, Wi-Fi status, working mode, data logging status and basic receiver
+information. Bluetooth and Wi-Fi technology provide cable-free
+communication between the receiver and controller.
+The receiver can be used as the part of a RTK GNSS system with CHC
+LansStar6 software. And you can download the GNSS data that recorded in
+the internal memory of receiver to a computer.
+You can change basic settings of the receiver with its LCD panel. To configure
+the receiver for performing a wide variety of functions, you can use the web
+interface by connecting the receiver with PC or smartphone through Wi-Fi.
+2.2. PARTS OF THE RECEIVER
+The operating controls are all located on the front panel. Battery
+compartment and SIM card slot are on the backside. Serial ports and
+connectors are located on the bottom of the unit.
+2.2.1. FRONT PANEL
+The following figure shows a front view of the receiver.
+Front panel
+The front panel contains one LCD screen, two indicator LEDs, and two
+buttons.
+i80 GNSS Receiver User Guide  Page 6
+
+=== Page 9 ===
+2. Getting started with i80
+Satellite LED Correction LED
+LCD screen
+Power & Enter
+Fn button
+button
+Name Description
+Satellite LED (Blue) Shows the number of satellites that the receiver has
+tracked.
+ When the receiver is searching satellites, the blue
+LED flashes once every 5 seconds.
+ When the receiver has tracked N satellites, the blue
+LED will flash N times every 5 seconds.
+Correction LED (Green) Indicates whether the receiver is transmitting/receiving
+differential data.
+The green LED flashes once per second when
+ As a Base station: successfully transmitting
+differential data.
+ As a Rover station: successfully receiving differential
+data from Base station.
+LCD screen This liquid crystal display enables you view the basic
+information and current configuration settings of
+receiver.
+Fn button  Move to next line of the menus or options.
+ Move to next character of the value that you want
+to make change.
+ Cancel the change you make on a function.
+Power & Enter button Works as a Power button:
+ Press and hold this button for 3 seconds to turn on
+or turn off the receiver.
+Works as a Enter button:
+ Advance to next screen.
+ Make change to the selected character or field.
+ Confirm the change you make on a function.
+ Confirm the changes you make on a screen.
+Works as a Reset button:
+ Hold Fn button, and press this button for 5 times
+i80 GNSS Receiver User Guide  Page 7
+
+=== Page 10 ===
+2. Getting started with i80
+continuously to reset the mainboard.
+For more information about the front panel and relevant operations, see 3.
+Front panel operation.
+2.2.2. LOWER HOUSING
+The lower housing contains one SIM card slot, two battery compartments,
+one TNC radio antenna connector, two communication and power ports, one
+5/8-11 threaded insert, and two nameplates.
+SIM card slot
+USB communication and
+power in port
+Battery compartment
+IO serial communication
+and power in port
+TNC radio antenna
+connector
+5/8-11 threaded insert
+2.2.3. RECEIVER PORTS
+Port Name Description
+IO port  This port is a 7-pin Lemo connector that supports RS-232
+communications and external power input.
+ Users can use GPS to PC Data Cable supplied with the
+system to realize RS-232 communications between the
+receiver and computer or controller. Also, users can use a
+7-pin cable to transmit differential data to an external radio.
+i80 GNSS Receiver User Guide  Page 8
+
+=== Page 11 ===
+2. Getting started with i80
+USB port  This port is a 7-pin Lemo connector that supports USB
+communications and external power input.
+ Users can USB Cable supplied with the system to download
+the logged data to a computer.
+ The OTG Cable supplied with the system can be used to
+upgrade the receiver firmware by connecting the receiver
+to a USB flash disk, or directly log the static data to a USB
+flash disk.
+Radio antenna Connect a radio antenna to internal radio of the receiver. And
+connector this connector is not used if you are using an external radio.
+2.3. BATTERIES AND POWER
+2.3.1. INTERNAL BATTERIES
+The receiver has two rechargeable Lithium-ion batteries, which can be
+removed for charging.
+2.3.1.1. Charging the battery
+The rechargeable Lithium-ion battery is supplied partially charged. Charge
+the battery completely before using it for the first time. To charge the
+battery, first remove the battery from the receiver, and then place it in the
+battery charger, which is connected to AC power.
+WARNING - Charge and use the rechargeable Lithium-ion battery only in
+strict accordance with the instructions. Charging or using the battery in
+unauthorized equipment can cause an explosion or fire, and can result in
+personal injury and/or equipment damage.
+To prevent injury or damage:
+• Do not charge or use the battery if it appears to be damaged or leaking.
+• Charge the Lithium-ion battery only in a CHC product that is specified
+to charge it. Be sure to follow all instructions that are provided with the
+battery charger.
+• Discontinue charging a battery that gives off extreme heat or a burning
+odor.
+• Use the battery only in CHC equipment that is specified to use it.
+• Use the battery only for its intended use and according to the
+instructions in the product documentation.
+i80 GNSS Receiver User Guide  Page 9
+
+=== Page 12 ===
+2. Getting started with i80
+2.3.1.2. Battery safe
+WARNING - Do not damage the rechargeable Lithium-ion battery. A
+damaged battery can cause an explosion or fire, and can result in personal
+injury and/or property damage.
+To prevent injury or damage:
+• Do not use or charge the battery if it appears to be damaged. Signs of
+damage include, but are not limited to, discoloration, warping, and leaking
+battery fluid.
+• Do not expose the battery to fire, high temperature, or direct sunlight.
+• Do not immerse the battery in water.
+• Do not use or store the battery inside a vehicle under hot weather
+condition.
+• Do not drop or puncture the battery.
+• Do not open the battery or short-circuit its contacts.
+WARNING - Avoid contact with the rechargeable Lithium-ion battery if it
+appears to be leaking. Battery fluid is corrosive, and contact with it can result
+in personal injury and/or property damage.
+To prevent injury or damage:
+• If the battery leaks, avoid with the battery fluid.
+• If battery fluid gets into your eyes, immediately rinses your eyes with
+clean water and seek medical attention. Please do not rub your eyes!
+• If battery fluid gets onto your skin or clothing, immediately use clean
+water to wash off the battery fluid.
+2.3.2. EXTERNAL POWER SUPPLY
+Two methods are available for providing the external power to the receiver
+by the GPS to PC Data Cable/USB Cable+ Power Adapter, or GPS to PC Data
+Cable/USB Cable + external power cable (option purchase)+ vehicle battery.
+In the office:
+The Power Adapter is connecting with AC power of 100-240V, the output
+port of the Power Adapter connects with the Power Port of the GPS to PC
+Data Cable/USB Cable.
+i80 GNSS Receiver User Guide  Page 10
+
+=== Page 13 ===
+2. Getting started with i80
+In the field:
+The external power cable is connecting with a vehicle battery, the output
+port of the external power cable connects with the Power Port of the GPS to
+PC Data Cable/USB Cable.
+WARNING - Use caution when connecting external power cable's clip leads
+to a vehicle battery. Do not allow any metal object to connect (short) the
+battery's positive (+) terminal to either the negative (-) terminal or the metal
+part of the vehicle battery. This could result in high current, arcing, and high
+temperatures, exposing the user to possible injury.
+2.4. INSERTING BATTERY AND SIM CARD
+Push down the spring-loaded button on the battery cover to open the cover.
+Make electrode sheets of battery turn toward the receiver, align the socket
+of the battery and the lug of the battery compartment, and then insert the
+battery into the battery compartment until it is locked by the battery bail.
+To remove the battery, slide the battery bail to the left or right.
+i80 GNSS Receiver User Guide  Page 11
+
+=== Page 14 ===
+2. Getting started with i80
+Push down
+Battery cover Battery bail
+Insert the SIM card with the contacts facing upward, as indicated by the SIM
+card icon next to the SIM card slot.
+To eject the SIM card, slightly push it in to trigger the spring-loaded release
+mechanism.
+Tip – The SIM card is provided by your cellular network service provider.
+2.5. PRODUCT BASIC SUPPLY ACCESSORIES
+2.5.1. BASE KIT BASIC SUPPLY
+Item Picture
+i80 GNSS Receiver
+UHF Bar Antenna (450-470 MHz)
+OTG Cable
+USB Cable
+i80 GNSS Receiver User Guide  Page 12
+
+=== Page 15 ===
+2. Getting started with i80
+GPS to PC Data Cable
+Lithium Battery
+H.I. Tape
+Extension pole
+Tribrach with optical plummet
+Auxiliary H.I. Tool
+Tribrach adaptor
+Transport Hard Case
+2.5.2. ROVER KIT BASIC SUPPLY
+Item Picture
+i80 GNSS Receiver
+UHF Bar Antenna (450-470 MHz)
+OTG Cable
+i80 GNSS Receiver User Guide  Page 13
+
+=== Page 16 ===
+2. Getting started with i80
+USB Cable
+GPS to PC Data Cable
+Battery Charger
+Power Adapter with Cord
+Lithium Battery
+2M Range Pole w/bag
+Auxiliary H.I. Tool
+Transport Hard Case
+2.6. CONNECTING TO AN OFFICE COMPUTER
+The receiver can be connected to an office computer for serial data transfer
+or settings via a GPS to PC Data Cable. Before you connect to the office
+computer, ensure that the receiver is powered on by internal battery or
+external power.
+The following figure shows how to connect to the computer for serial data
+transfer or settings:
+i80 GNSS Receiver User Guide  Page 14
+
+=== Page 17 ===
+2. Getting started with i80
+GPS to PC Data Cable
+2.7. CONNECTING TO A CONTROLLER
+2.7.1. CONNECTING VIA WI-FI WITH HCCONFIG SOFTWARE
+1. Turn on the controller → run Hcconfig → tap Connection in the main
+menu.
+2. In the Connection screen, select CHC for the Manufacture field, Smart
+GNSS for Device Type field, WIFI for Mode field.
+3. Tap the setting button next to Mode field → turn on the Wi-Fi function
+→ tap Menu button → tap Wi-Fi Settings.
+4. In the Configure Wireless Network Settings screen, tap the wireless
+network named as the SN of your receiver.
+5. In the pop-up screen, tap Next button to enter Configure Network
+Authentication screen → enter the Network Key →tap Next button.
+i80 GNSS Receiver User Guide  Page 15
+
+=== Page 18 ===
+2. Getting started with i80
+Tip – The Wi-Fi key of the receiver is 12345678 by default.
+6. Tap Finish button in the pop-up screen, and then you can check that the
+controller system has connected to the Wi-Fi of the receiver. Tap ok
+button in the top right corner.
+7. Tap button in the pop-up screen to go back to the Hcconfig screen
+→ tap Connect button to connect the software with the receiver via
+Wi-Fi.
+i80 GNSS Receiver User Guide  Page 16
+
+=== Page 19 ===
+2. Getting started with i80
+2.7.2. CONNECTING VIA BLUETOOTH WITH HCCONFIG SOFTWARE
+2.7.2.1. Via system Bluetooth
+1. Turn on the controller → run Hcconfig → tap Connection in the main
+menu.
+2. In the Connection screen, select CHC for the Manufacture field, Smart
+GNSS for Device Type field, Sys. BT for Mode field.
+3. Tap the setting button next to Mode field → turn on the Bluetooth
+function → tap Menu button → tap Bluetooth Settings.
+4. In the Bluetooth settings screen, select Devices tab. Tap Add new
+device…, and then the system will search for Bluetooth devices.
+i80 GNSS Receiver User Guide  Page 17
+
+=== Page 20 ===
+2. Getting started with i80
+In the Select a Bluetooth screen, tap the Bluetooth device named as the SN
+of your receiver → tap Next button.
+5. In the Enter Passcode screen, enter the Passcode → tap Next button.
+After the device is added, tap Done button.
+Tip – The Bluetooth key of the receiver is 1234 by default.
+6. In the Bluetooth settings screen, select COM Ports tab. Tap New
+Outgoing Port → select your receiver → tap Next button.
+i80 GNSS Receiver User Guide  Page 18
+
+=== Page 21 ===
+2. Getting started with i80
+7. Select a COM port that has not be used from the dropdown list of the
+Port field → untick Secure Connection option → tap Finish button.
+8. Tap ok button in the top right corner to back the Wireless Manager
+screen → tap button to go back the Hcconfig screen →select COM
+Port that you configured to connect the controller with the receiver for
+the Port field → tap Connect button to connect the software with the
+receiver via system Bluetooth.
+2.7.2.2. Via CHC Bluetooth
+1. Turn on the controller → run Hcconfig → tap Connection in the main
+menu.
+2. In the Connection screen, select CHC for the Manufacture field, Smart
+GNSS for Device Type field, CHC BT for Mode field, COM Port that you
+want to be used to connect the controller with the receiver for the Port
+field.
+i80 GNSS Receiver User Guide  Page 19
+
+=== Page 22 ===
+2. Getting started with i80
+3. Tap Search Device to search the Bluetooth devices → tap the Bluetooth
+device named as the SN of your receiver → tap Connect button to
+connect the software with the receiver via CHC Bluetooth.
+2.7.3. CONNECTING VIA WI-FI WITH LANDSTAR 6 SOFTWARE
+1. Turn on the controller → tap Start button → tap Settings → select
+Connection tab → tap Wireless Manager → turn on the Wi-Fi function
+→ tap Menu button → tap Wi-Fi Settings.
+2. In the Configure Wireless Network Settings screen, tap the wireless
+network named as the SN of your receiver.
+3. In the pop-up screen, tap Next button to enter Configure Network
+Authentication screen → enter the Network Key →tap Next button.
+i80 GNSS Receiver User Guide  Page 20
+
+=== Page 23 ===
+2. Getting started with i80
+Tip – The Wi-Fi key of the receiver is 12345678 by default.
+4. Tap Finish button in the pop-up screen, and then you can check that the
+controller system has connected to the Wi-Fi of the receiver.
+5. Go back to the main screen → run LandStar 6 → create a new project or
+open an existing project.
+6. In the Main Menu, tap Device →tap Connection.
+7. Select CHC for the Manufacture field, Smart GNSS for Device Type field,
+WIFI for Connect field, CHCi80 for Antenna Type field → select Base or
+i80 GNSS Receiver User Guide  Page 21
+
+=== Page 24 ===
+2. Getting started with i80
+Rover as Connection Type according to the your needs → tap in
+the lower right corner to connect the software with the receiver via
+Wi-Fi.
+2.7.4. CONNECTING VIA BLUETOOTH WITH LANDSTAR 6 SOFTWARE
+1. Turn on the controller →run LandStar 6 → create a new project or open
+an existing project.
+2. In the Main Menu, tap Device → tap Connection.
+3. Select CHC for the Manufacture field, Smart GNSS for Device Type field,
+Bluetooth for Connection field.
+4. Tap icon next to Connection field → tap Search Device in the
+pup-up Bluetooth Binding screen → select the Bluetooth device named
+as the SN of your receiver → tap in the lower right corner to go
+i80 GNSS Receiver User Guide  Page 22
+
+=== Page 25 ===
+2. Getting started with i80
+back to Connection screen.
+5. Select COM Port that you want to be used to connect the controller
+with the receiver for the Port field → CHCi80 for Antenna Type field →
+select Base or Rover as Connection Type according to the your needs →
+tap in the lower right corner to connect the software with the
+receiver via Bluetooth.
+2.8. CONNECTING TO A USB DRIVE
+The receiver can log data directly to a USB drive using the supplied OTG
+cable. Also, users can use USB drive to upgrade the firmware for your
+receiver using the OTG cable.
+The following figure shows how to connect to a USB drive:
+OTG Cable
+i80 GNSS Receiver User Guide  Page 23
+
+=== Page 26 ===
+2. Getting started with i80
+2.8.1. FOR DATA LOGGING
+The receiver can log data directly to a USB drive; however, the logged
+(existing) data cannot be downloaded directly from the receiver memory to
+a USB drive.
+To log data directly to a USB drive:
+1. Connect the USB device (or other external storage device, such as
+portable hard drive) with receiver through USB port using the OTG
+cable.
+2. Configure the data logging settings through a web browser (see 7.4.1.
+Log Settings submenu for instruction).
+Notes
+ Select a data logging session, and then select “External Storage” as
+the store location.
+ Make sure the data logging session selected is switched on after the
+configuration. Also, user need to verify the Log Status is “Recording”
+before leave the web browser.
+3. The receiver will log static data to the USB drive.
+Note – To download the data logged in the USB driver, connect the USB
+driver to the computer, find a folder named as “repo” in the USB drive, and
+then locate the logged static data according to procedure illustrated as
+follows:
+i80 GNSS Receiver User Guide  Page 24
+
+=== Page 27 ===
+2. Getting started with i80
+2.8.2. FOR FIRMWARE UPGRADE
+1. Copy the firmware file (xxx.bin file) to the root directory of external
+storage device such as USB drive, portable hard drive.
+2. Connect the external storage device with receiver through USB port
+using the OTG cable.
+3. Restart the receiver and then the LCD screen will prompt you whether
+to upgrade the firmware.
+4. Press Fn button to upgrade the firmware.
+5. When the upgrading is completed, the receiver will be restarted and the
+LCD screen will prompt you whether to upgrade the firmware again.
+6. Press Enter button to quit the upgrading and then remove the OTG
+cable.
+Note – You can also use Wi-Fi to upgrade the firmware for your receiver
+using the web browser (see 7.11.3. Firmware update submenu for
+instruction).
+2.9. DOWNLOADING LOGGED DATA
+Data logging involves the collection of GNSS measurement data over a
+period of time at a static point or points, and subsequent postprocessing of
+the information to accurately compute baseline information. Data logging
+using receivers requires access to suitable GNSS postprocessing software
+such as the CHC Geomatics Office (CGO) Software.
+The following figure shows how to connect to the computer for downloading
+logged data:
+i80 GNSS Receiver User Guide  Page 25
+
+=== Page 28 ===
+2. Getting started with i80
+USB Cable
+The procedures of downloading logged data in the receiver are as follows:
+1. Switch on the receiver and connect it with a computer by USB Cable.
+After the successful connection, a removable disk named as the Serial
+Number (SN) of the receiver will appear on the computer.
+2. Double click the removable disk and you will see the folder named as
+“repo”. Double click this folder, you will see 9 folders. The “push_log”
+folder is used to save the log files, and the other 8 folders represent
+different logging session and are used for store static data.
+3. Double click the folder that you has configured to store the static data,
+you will see the folder(s) created by the i80 system automatically and
+named by the date which is decide by GPS time when you start to log
+data.
+4. Select the destination folder and double click it, and then two folders
+named as different data format (hcn and rinex) will be displayed.
+5. Select the data format that you has configured to save the static data,
+you will find the static raw data.
+Tip – For hcn files, the name of the file is represented as XXXXXXDDDNN,
+where XXXXXX is the SN of the receiver, DDD is day of year, and NN is the
+recording session.
+WARNING – The static data will be saved in the first logging session, the
+“record_1” folder, by default. Old files will be deleted if the storage space is
+full. If you configure not to auto delete old files when the memory is low, the
+receiver will stop data logging.
+i80 GNSS Receiver User Guide  Page 26
+
+=== Page 29 ===
+3. FRONT PANEL OPERATION
+The front panel contains one LCD screen, two indicator LEDs, and two
+buttons. The operating controls are all located on the front panel.
+3.1. MAIN OPERATION MENUS
+The main operation menus of the front panel are as follows:
+Top-level Menu Second-level Menu Description
+SV: 22 Battery: 97%  Click Enter button to enter the
+second-level menus.
+ Indicates the number of the satellites
+tracked and the internal batteries power
+remaining.
+ If the receiver is searching for satellites
+and the batteries are not be inserted, this
+menu will be displayed as “SV: Getting
+Battery: N/A”.
+22 = G09 R05 C07 S00 E0 Indicates the total number of satellites that
+have been tracked and the number of satellites
+tracked of each constellation, where G
+represents GPS, R represents GLONASS, C
+represents BeiDou, S represents SBAS and E
+represents Galileo.
+Pwr: A 97% B 97% Indicates the remaining power of the battery
+inserted in the left (B) and right (A) battery
+compartment.
+Wlan Status On Wlan Mode  Indicates the Wi-Fi status.
+HotSpot  Click Enter button to change the status,
+and then click Fn button to cancel the
+change, or click Enter button to confirm
+the change.
+Dial Status Offline  Indicates whether the receiver has been
+connected to cellular network.
+ Generally, when the SIM card has been
+inserted before the receiver is turned on,
+this menu will be displayed as “Dial Status
+Online”.
+Cancel Click Enter button to back to the top-level
+menu.
+Mode Rover UHF  Click Enter button to enter the
+i80 GNSS Receiver User Guide  Page 27
+
+=== Page 30 ===
+3. Front panel operation
+Top-level Menu Second-level Menu Description
+second-level menus.
+ Indicates the current working mode.
+Base Cable
+ Click Enter button to enter the
+Base Int. UHF
+configuration screen of the selected
+Base APIS
+working mode.
+Base APIS & Cable
+ More operation information, see 3.2.
+Rover APIS
+Configure the working mode.
+Rover Ntrip/IP
+Rover UHF
+Cancel Click Enter button to back to the top-level
+menu.
+Static Off  Click Enter button to enter the
+second-level menus.
+ Indicates the current data logging status:
+Static Off or Static On.
+Set Off Click Enter button to change the data logging
+status.
+Recorded 00:02 Indicates the duration of data logging.
+Epoch Intv 1s  Click Enter button to change the
+measurement interval.
+ The available options are: 0.2s, 0.5s, 1s,
+2s, 5s, 10s, 15s, 30s, and 60s.
+Mask Angle 13 Degree Click Enter button to change the mask degree
+from 0 degree to 15 degrees.
+Duration time 1440 min  Click Enter button to enter Duration Time
+Setting screen.
+ In the Duration Time Setting screen, click
+Fn button to move to the character of the
+duration time value you want to make
+change, and then click Enter button to
+change from 0 to 9. After the change has
+been done, you can click Fn button to
+move to OK field, and then click Enter
+button to save the change and back to the
+second-level menu; or click Fn button to
+move to Cancel field and click Enter
+button to cancel the change and back to
+the second-level menu.
+OK Click Enter button to save the settings of the
+data logging and back to the top-level menu,
+and then the settings will take effect.
+i80 GNSS Receiver User Guide  Page 28
+
+=== Page 31 ===
+3. Front panel operation
+Top-level Menu Second-level Menu Description
+Cancel Click Enter button to cancel the settings of the
+data logging and back to the top-level menu.
+Receiver Info. Click Enter button to enter the second-level
+menus and check the basic information about
+the receiver.
+SN 1000514 Displays the Serial Number (SN) of the receiver.
+PN 1180020032231 Displays the Part Number (PN) of the receiver.
+Reg. 20301231 Displays the expiry date of registration code.
+Ver. 1.1.16 Displays the firmware version.
+Language English Click Enter button to change the display
+language between Chinese, English and
+Russian.
+Cancel Click Enter button to back to the top-level
+menu.
+3.2. CONFIGURE THE WORKING MODE
+7 working modes are provided for quickly setting up a RTK base station or
+rover station. Users can configure each working mode through front panel as
+follows:
+Working Mode Menus in Configuration Screen Description
+Base Cable  Set up the receiver as a base station using
+external UHF.
+ Click Enter button to enter the
+configuration screen.
+Mode Base Cable The title of this configuration screen.
+Format CMR  Click Enter button to change the correction
+format.
+ The available correction formats are: CMR,
+CMR+, SCMR, RTCM v2.3, RTCM v3, and
+RTCM v3.2.
+OK Click Enter button to save the settings and back
+to the top-level menu, and then this working
+mode will take effect.
+Cancel Click Enter button to cancel the settings and back
+to the second-level menu.
+Base Int. UHF  Set up the receiver as a base station using
+internal UHF.
+ Click Enter button to enter the
+configuration screen.
+i80 GNSS Receiver User Guide  Page 29
+
+=== Page 32 ===
+3. Front panel operation
+Working Mode Menus in Configuration Screen Description
+Mode Base Int. UHF The title of this configuration screen.
+Channel 1 Click Enter button to change the channel from 1
+to 9.
+Format CMR  Click Enter button to change the correction
+format.
+ The available correction formats are: CMR,
+CMR+, SCMR, RTCM v2.3, RTCM v3, and
+RTCM v3.2.
+Power 2w  Click Enter button to change the
+transmitting power.
+ The available transmitting power options
+are: 0.1w, 0.5w, 1w and 2w.
+Protocol CHC Indicates the current protocol.
+OK Click Enter button to save the settings and back
+to the top-level menu, and then this working
+mode will take effect.
+Cancel Click Enter button to cancel the settings and back
+to the second-level menu.
+Base APIS  Set up the receiver as a base station using
+APIS service.
+ Click Enter button to enter the
+configuration screen.
+Mode Base APIS The title of this configuration screen.
+Format CMR  Click Enter button to change the correction
+format.
+ The available correction formats are: CMR,
+CMR+, SCMR, RTCM v2.3, RTCM v3, and
+RTCM v3.2.
+IP 211.144.118.5  Click Enter button to enter Common IP
+screen.
+ In Common IP screen, click Fn button to
+move to the line of IP address, and then
+click Enter button to change to other
+predefined IP address. After the IP address
+has been changed, you can click Fn button
+to move to OK field, and then click Enter
+button to save the change and back to the
+second-level menu; or click Fn button to
+move to Cancel field and click Enter button
+to cancel the change and back to the
+i80 GNSS Receiver User Guide  Page 30
+
+=== Page 33 ===
+3. Front panel operation
+Working Mode Menus in Configuration Screen Description
+second-level menu.
+Port 9901 Click Enter button to change the port from 9901
+to 9920.
+OK Click Enter button to save the settings and back
+to the top-level menu, and then this working
+mode will take effect.
+Cancel Click Enter button to cancel the settings and back
+to the second-level menu.
+Base APIS & Cable  Set up the receiver as a base station using
+both APIS service and external UHF.
+ Click Enter button to enter the
+configuration screen.
+Mode Base APIS & Cable The title of this configuration screen.
+Way Cable & APIS Indicates that the receiver is set up as a base
+station using not only external UHF, but also APIS
+service
+Format CMR  Click Enter button to change the correction
+format.
+ The available correction formats are: CMR,
+CMR+, SCMR, RTCM v2.3, RTCM v3, and
+RTCM v3.2.
+IP 211.144.118.5  Click Enter button to enter Common IP
+screen.
+ In Common IP screen, click Fn button to
+move to the line of IP address, and then
+click Enter button to change to other
+predefined IP address. After the IP address
+has been changed, you can click Fn button
+to move to OK field, and then click Enter
+button to save the change and back to the
+second-level menu; or click Fn button to
+move to Cancel field and click Enter button
+to cancel the change and back to the
+second-level menu.
+Port 9901 Click Enter button to change the port from 9901
+to 9920.
+OK Click Enter button to save the settings and back
+to the top-level menu, and then this combination
+working mode will take effect.
+Cancel Click Enter button to cancel the settings and back
+to the second-level menu.
+i80 GNSS Receiver User Guide  Page 31
+
+=== Page 34 ===
+3. Front panel operation
+Working Mode Menus in Configuration Screen Description
+Rover APIS  Set up the receiver as a rover station using
+APIS service.
+ Click Enter button to enter the
+configuration screen.
+Mode Rover APIS The title of this configuration screen.
+Current Base SN 1000456  Display the SN of corresponding base
+station.
+ Click Enter button to enter Base SN setting
+screen. In the Base SN setting screen, click
+Fn button to move to the character of the
+value you want to make change, and then
+click Enter button to change from digital 0
+to 9 (in addition, the initial character can be
+changed to letter R). After the change has
+been done, you can click Fn button to move
+to OK field, and then click Enter button to
+save the change and back to the
+second-level menu; or click Fn button to
+move to Cancel field and click Enter button
+to cancel the change and back to the
+second-level menu.
+IP 211.144.118.5  Click Enter button to enter Common IP
+screen.
+ In Common IP screen, click Fn button to
+move to the line of IP address, and then
+click Enter button to change to other
+predefined IP address. After the IP address
+has been changed, you can click Fn button
+to move to OK field, and then click Enter
+button to save the change and back to the
+second-level menu; or click Fn button to
+move to Cancel field and click Enter button
+to cancel the change and back to the
+second-level menu.
+Port 9901 Click Enter button to change the port from 9901
+to 9920.
+OK Click Enter button to save the settings and back
+to the top-level menu, and then this working
+mode will take effect.
+Cancel Click Enter button to cancel the settings and back
+to the second-level menu.
+Rover Ntrip/IP  Set up the receiver as a rover station using
+i80 GNSS Receiver User Guide  Page 32
+
+=== Page 35 ===
+3. Front panel operation
+Working Mode Menus in Configuration Screen Description
+Ntrip.
+ Click Enter button to enter the
+configuration screen.
+Mode Rover Ntrip/IP The title of this configuration screen.
+Status Logged  Indicates current status of Ntrip: Status Not
+Logged or Status Logged.
+ Users need to use the web interface to
+configure the settings to log on Ntrip (see
+7.5.1. IO Settings submenu → RTK Client for
+instruction) before.
+Note – Make sure a valid SIM card has been
+inserted in the receiver.
+OK Click Enter button to save the settings and back
+to the top-level menu, and then this working
+mode will take effect.
+Cancel Click Enter button to cancel the settings and back
+to the second-level menu.
+Rover UHF  Set up the receiver as a rover station using
+internal UHF.
+ Click Enter button to enter the
+configuration screen.
+Mode Rover UHF The title of this configuration screen.
+Channel 1 Click Enter button to change the channel from 1
+to 9.
+Protocol CHC Indicates the current protocol.
+OK Click Enter button to save the settings and back
+to the top-level menu, and then this working
+mode will take effect.
+Cancel Click Enter button to cancel the settings and back
+to the second-level menu.
+Note – The operation menus of front panel may vary from different firmware
+versions of your receiver. The menus described in this chapter are based on
+firmware version 1.1.16.
+i80 GNSS Receiver User Guide  Page 33
+
+=== Page 36 ===
+4. BASE STATION SETUP AND OPERATION
+Real-Time Kinematic (RTK) operation provides centimeter-level precision by
+eliminating errors that are present in the GNSS system. For all RTK
+operations, you require both a rover receiver and a source of corrections
+from a base station or network of base stations.
+A base station consists of a receiver that is placed at a known point. The
+receiver tracks the same satellites that are being tracked by the rover
+receiver simultaneously. Errors in the GNSS system are monitored at the
+base station, and a series of position corrections are computed. The
+messages are sent through a radio link to the rover receiver, where they are
+used to correct the real time positions of the rover.
+This chapter provides the information to help you identify good setup
+locations, outlines basic precautions that you need to take to protect the
+equipment, and describes the conventional process to set up the base
+station and the configuring procedure that required for transmitting
+correction data.
+4.1. BASE STATION SETUP GUIDELINES
+For good performance, the following base station setup guidelines are
+recommended:
+ Place the GNSS receiver in a location on the worksite where equal
+range in all directions provides full coverage of the site.
+ Place the GNSS antenna in a location that has a clear line of sight to the
+sky in all directions. Do not place the antenna near vertical obstructions
+such as buildings, deep cuttings, site vehicles, towers, or tree canopy.
+ The GNSS antenna must have a dear line of sight to the sky at all times
+during operation.
+ Place the GNSS and radio antennas as high as practical. This minimizes
+multipath from the surrounding area, and enables the radio to
+broadcast to the maximum distance.
+ Choose the most appropriate radio antenna for the size of the worksite.
+The higher the gain on the antenna, the longer the range.
+ Make sure that the GNSS receiver does not lose power. To operate
+continuously for more than a few hours without loss of power at the
+base station, provide external power. When you use an external power
+supply, the integrated battery provides a backup power supply,
+enabling you to maintain continuous operation through a mains power
+failure.
+ Do not locate a GNSS receiver, GNSS antenna, or radio antenna within
+400 meters (about 1,300 feet) of transmitters, such as a power radar or
+i80 GNSS Receiver User Guide  Page 34
+
+=== Page 37 ===
+4. Base station setup and operation
+cellular communications tower.
+ Do not set up the base station close to the sources of electromagnetic
+interference, include alternators and generators, electric motors,
+equipment with DC-to-AC converters, etc.
+ Do not operate the receiver outside the specified operating
+temperature range -40°C to +60°C (-40°F to +140°F).
+ Take reasonable care to keep the GNSS receiver equipment dry, which
+could prolong their life and reduce the effects of corrosion on ports and
+connectors.
+4.2. OUTPUTTING CORRECTIONS USING INTERNAL RADIO MODEM
+4.2.1. BASE STATION SETUP
+1. Connect the radio antenna onto i80 receiver. Screw the receiver onto
+extension pole.
+2. Screw the extension pole with auxiliary H.I. tool onto tribrach adaptor.
+3. Mount the tribrach onto the tripod.
+4. Insert the tribrach adaptor into the tribrach.
+5. Level and plumb the receiver over the known (control) point.
+6. Measure the height of the base station GNSS antenna by measuring the
+slant height from the known (control) point to the auxiliary H.I. tool.
+Note – Select “Bottom” as the measurement method, select “CHCi80” as
+antenna type, and then enter the vertical height from the known (control)
+point to the bottom of receiver that you calculated by adding the height of
+the extension pole to the height from the known (control) point to the
+auxiliary H.I. tool, the CHC LandStar 6 will calculate the height to the
+Antenna Phase Center (APC) automatically.
+7. If required, connect the receiver to an external 12 V power supply.
+i80 GNSS Receiver User Guide  Page 35
+
+=== Page 38 ===
+4. Base station setup and operation
+Slant height
+4.2.2. CONFIGURING THE BASE STATION
+4.2.2.1. Configuring via Hcconfig software
+1. Power on the receiver.
+2. Turn on the controller, run Hcconfig and establish the connection with
+receiver via Bluetooth or Wi-Fi (see 2.7. Connecting to a controller for
+the operations).
+3. After successful connection, tap RTK in the main menu.
+4. In RTK screen, select Mode from the dropdown list.
+When select Auto Base for Mode field:
+5. Configure the related parameters: Format, Baud, Elevation and PDOP.
+6. Tick Radio option for Enable IO.
+7. Tap Set button to save the settings, and then tap Back button to go back
+to main menu.
+8. Tap GPRS And Internal UHF in the main menu, select Internal UHF for
+Work Mode.
+9. Configure the internal radio parameters according to your need:
+Frequency and Power.
+10. Tick Auto Power and Power on to turn on the internal UHF modem.
+11. Tap Set button to save the settings → tap Back button to go back to
+main menu →tap Exit → select Exit Software Only option to exit
+Hcconfig.
+When select Manual Base for Mode field:
+i80 GNSS Receiver User Guide  Page 36
+
+=== Page 39 ===
+4. Base station setup and operation
+5. Configure the related parameters: Format, Baud, Elevation and PDOP.
+6. Tap Here button to obtain the current position or manually enter the
+coordinates of the known point in B, L and H.
+7. Tick Radio option for Enable IO.
+8. Tap Set button to save the settings, and then tap Back button to go back
+to main menu.
+9. Tap GPRS And Internal UHF in the main menu, select Internal UHF for
+Work Mode.
+10. Configure the internal radio parameters according to your need:
+Frequency and Power.
+11. Tick Auto Power and Power on to turn on the internal UHF modem.
+12. Tap Set button to save the settings → tap Back button to go back to
+main menu →tap Exit → select Exit Software Only option to exit
+Hcconfig.
+4.2.2.2. Configuring via LandStar 6 software
+1. Power on the receiver.
+2. Turn on the controller → run LandStar 6 → create a new project or open
+an existing project → establish the connection with receiver via
+Bluetooth or Wi-Fi (see 2.7. Connecting to a controller for the
+operations).
+3. After successful connection, tap Communication Mode in the Device
+screen.
+4. In Communication Mode screen, select Radio for Mode field.
+5. Configure the related parameters from the dropdown list: Protocol, Freq,
+Baud and Power.
+6. Tap to confirm and save the settings → tap in the lower
+right corner to back to Device screen.
+7. Tap Base Config → select Start Base Station tab.
+8. Configure the GNSS antenna related parameters as follows:
+Type field: tap next to Type field to select CHCi80 as antenna type.
+Measure To field: select Bottom from the dropdown list.
+Height field: enter the vertical height (in meters) you calculated from
+the known (control) point to the bottom of receiver for
+Height field.
+9. Configure the coordinates of base station.
+There are three methods available to configure the base station
+coordinates:
+a) Tap next to Name field to select an existing point.
+i80 GNSS Receiver User Guide  Page 37
+
+=== Page 40 ===
+4. Base station setup and operation
+b) Manually enter the coordinates of the known point in B, L and H.
+c) Tap Get Current Position button to obtain the current position of
+the base receiver.
+10. Go to Base Parameters tab → select Inner Radio for Transmit COM field
+→ configure the Data Format field, Baud Rate field and Elevation Mask
+field according to your need.
+11. Tap in the lower right corner to save the settings, and then the
+LandStar 6 will disconnect with the receiver automatically.
+4.3. OUTPUTTING CORRECTIONS USING EXTERNAL RADIO
+4.3.1. BASE STATION SETUP
+For base receiver part:
+1. Screw the i80 receiver onto extension pole.
+2. Screw the extension pole with auxiliary H.I. tool onto tribrach adaptor.
+3. Mount the tribrach onto the tripod.
+4. Insert the tribrach adaptor into the tribrach.
+5. Level and plumb the receiver over the known (control) point.
+6. Measure the height of the base station GNSS antenna by measuring the
+slant height from the known (control) point to the auxiliary H.I. tool.
+Note – Select “Bottom” as the measurement method, select “CHCi80” as
+antenna type, and then enter the vertical height from the known (control)
+point to the bottom of receiver that you calculated by adding the height of
+the extension pole to the height from the known (control) point to the
+auxiliary H.I. tool, the CHC LandStar 6 will calculate the height to the
+Antenna Phase Center (APC) automatically.
+7. If required, connect the receiver to an external 12 V power supply.
+For external radio part (take the CHC DL5-C Datalink for example):
+8. Connect the Datalink Antenna to the 3 meter Cable for Datalink
+Antenna.
+9. Connect 3 meter Cable for Datalink Antenna to Datalink Antenna
+Mounting Pole.
+10. Screw the Datalink Antenna Mounting Pole onto the tribrach adapter.
+11. Mount the tribrach onto the tripod.
+12. Insert the tribrach adaptor into the tribrach.
+13. Set up the Datalink Antenna nearby the base receiver.
+14. Fix the DL5-C Datalink onto the tripod.
+15. Place the car battery at an appropriate location.
+i80 GNSS Receiver User Guide  Page 38
+
+=== Page 41 ===
+4. Base station setup and operation
+For connection between the receiver part and external radio part:
+16. Connect Datalink Antenna to the Datalink Antenna Slot of DL5-C
+Datalink via 3 meter Cable for Datalink Antenna.
+17. Connect the base receiver with DL5-C Datalink via GPS to Datalink Cable.
+18. Connect the car battery with DL5-C Datalink via Datalink External Power
+Cable.
+CAUTION – The Datalink Antenna must be connected to the Datalink before
+the Datalink is powered on; otherwise, the Datalink can be damaged.
+4.3.2. CONFIGURING THE BASE STATION
+4.3.2.1. Configuring via Hcconfig software
+1. Power on the receiver.
+2. Turn on the controller, run Hcconfig and establish the connection with
+receiver via Bluetooth or Wi-Fi (see 2.7. Connecting to a controller for
+the operations).
+3. After successful connection, tap RTK in the main menu.
+4. In RTK screen, select Mode from the dropdown list.
+When select Auto Base for Mode field:
+5. Configure the related parameters: Format, Baud, Elevation and PDOP.
+i80 GNSS Receiver User Guide  Page 39
+
+=== Page 42 ===
+4. Base station setup and operation
+6. Tick Port option for Enable IO.
+7. Tap Set button to save the settings → tap Back button to go back to
+main menu →tap Exit → select Exit Software Only option to exit
+Hcconfig.
+8. After the receiver is successfully transmitting correction data (with the
+green LED flashing once per second), power on the external radio, and
+then configure the external radio from its panel.
+When select Manual Base for Mode field:
+5. Configure the related parameters: Format, Baud, Elevation and PDOP.
+6. Tap Here button to obtain the current position or manually enter the
+coordination of the known point in B, L and H.
+7. Tick Port option for Enable IO.
+8. Tap Set button to save the settings → tap Back button to go back to
+main menu →tap Exit → select Exit Software Only option to exit
+Hcconfig.
+9. After the receiver is successfully transmitting correction data (with the
+green LED flashing once per second), power on the external radio, and
+then configure the external radio from its panel.
+4.3.2.2. Configuring via LandStar 6 software
+1. Power on the receiver.
+2. Turn on the controller → run LandStar 6 → create a new project or open
+an existing project → establish the connection with receiver via
+Bluetooth or Wi-Fi (see 2.7. Connecting to a controller for the
+operations).
+3. After successful connection, tap Communication Mode in the Device
+screen.
+4. In Communication Mode screen, select External Radio for Mode → tap
+in the lower right corner to back to Device screen.
+5. Tap Base Config → select Start Base Station tab.
+6. Configure the GNSS antenna related parameters as follows:
+Type field: tap next to Type field to select CHCi80 as antenna type.
+Measure To field: select Bottom from the dropdown list.
+Height field: enter the vertical height (in meters) you calculated from
+the known (control) point to the bottom of receiver for
+Height field.
+7. Configure the coordinates of base station.
+There are three methods available to configure the base station
+i80 GNSS Receiver User Guide  Page 40
+
+=== Page 43 ===
+4. Base station setup and operation
+coordinates:
+a) Tap next to Name field to select an existing point.
+b) Manually enter the coordinates of the known point in B, L and H.
+c) Tap Get Current Position button to obtain the current position of
+the base station.
+8. Go to Base Parameters tab → select Outer Radio for Transmit COM field
+→ configure the Data Format field, Baud Rate field and Elevation Mask
+field according to your need.
+9. Tap in the lower right corner to save the settings, and then the
+LandStar 6 will disconnect with the receiver automatically.
+10. After the receiver is successfully transmitting correction data (with the
+green LED flashing once per second), power on the external radio, and
+then configure the external radio from its panel.
+i80 GNSS Receiver User Guide  Page 41
+
+=== Page 44 ===
+5. ROVER STATION SETUP AND OPERATION
+Real-Time Kinematic (RTK) operation provides centimeter-level precision by
+eliminating errors that are present in the GNSS system. For all RTK
+operations, you require both a rover receiver and a source of corrections
+from a base station or network of base stations.
+The second part of the RTK GNSS system is the rover receiver. The rover
+receiver is moved between the points that require measurement or stakeout.
+The rover receiver is connected to a base station or to a source of RTK
+corrections such as a CORS (Continuous Operational Reference System) or
+the CHC APIS service. The connection is provided by:
+ an integrated radio
+ an integrated cellular modem
+ a cellular modem in the controller
+This chapter provides the information to help you identify good setup
+locations, describes the conventional process to set up the rover station and
+the configuring procedure that required for receiving correction data.
+5.1. ROVER STATION SETUP GUIDELINES
+For good rover operation, observe the following setup guidelines:
+ Place the GNSS antenna in a location that has a clear line of sight to the
+sky in all directions. Do not place the antenna near vertical obstructions
+such as buildings, deep cuttings, site vehicles, towers, or tree canopy.
+GNSS rovers and the base station receive the same satellite signals
+from the same satellites. The system needs five common satellites to
+provide RTK positioning.
+WARNING – Take care not to touch overhead power lines with the CHC i80
+GNSS receiver or the range pole when moving the equipment into position.
+Touching overhead power lines may cause electrocution, leading to serious
+injury.
+ GNSS satellites are constantly moving. Because you cannot measure at
+a specific location now does not mean that you will not be able to
+measure there later, when satellite coverage at the location improves.
+ To get a fixed position solution with centimeter precision, initialize the
+RTK rover receiver. For initialization to take place, the receiver must
+track at least five satellites that the base station is also tracking. In a
+dual-satellite constellation operation, for example, GPS and GLONASS,
+the receiver must track at least six satellites.
+i80 GNSS Receiver User Guide  Page 42
+
+=== Page 45 ===
+5. Rover station setup and operation
+ To continue to survey at centimeter precisions, the rover must
+continuously track at least four satellites that the base station is also
+tracking. The radio link between the base and rover receivers must also
+be maintained.
+ Loss of the satellite signals will result in a loss of centimeter position
+precision.
+5.2. ROVER STATION SETUP
+1. If required, connect the radio antenna onto i80 receiver.
+2. Screw the receiver on top of the range pole.
+3. Fix the controller bracket on the range pole.
+4. Fit the controller in the controller bracket.
+5. Level and plumb the receiver over the target measuring point.
+5.3. CONFIGURING THE ROVER STATION VIA LANDSTAR 6
+SOFTWARE
+5.3.1. RECEIVING CORRECTIONS USING INTERNAL RADIO MODEM
+1. Power on the receiver.
+2. Turn on the controller → run LandStar 6 → create a new project or open
+an existing project → establish the connection with receiver via
+Bluetooth or Wi-Fi (see 2.7. Connecting to a controller for the
+i80 GNSS Receiver User Guide  Page 43
+
+=== Page 46 ===
+5. Rover station setup and operation
+operations).
+3. After successful connection, tap Rover Config in the Device screen.
+4. In Rover Config screen, configure the related parameters from the
+dropdown list or enter the value with the soft keyboard: Data Format,
+Elevation Mask, PDOP Limit, Safe Mode and Iono Condition.
+Note – Select the Data Format the same as that of base receiver.
+5. Configure the antenna parameters as follows:
+Type field: tap next to Type field to select CHCi80 as antenna type.
+Measure To field: select Bottom from the dropdown list.
+Height field: enter the height (in meters) of the range pole you are
+using.
+6. If required, tick Warning when base changed option → tap in the
+lower right corner to save the settings and go back to Device screen.
+7. Tap Communication Mode → select Radio for Mode field.
+8. Configure the radio parameters as follows:
+Protocol field: select the protocol the same as that of base station.
+Freq field: select the frequency the same as that of base station.
+Tip – Users can select a radio channel from the dropdown list. The frequency
+of channel 1 to 9 is predefined; however, the frequency of channel 0 is
+editable.
+Baud field: select the baud rate the same as that of base station.
+Power field: select the power from the dropdown list according to your
+i80 GNSS Receiver User Guide  Page 44
+
+=== Page 47 ===
+5. Rover station setup and operation
+need.
+9. Tap to confirm and save the settings of the radio.
+10. After the radio parameters are successfully configured, tap in the
+lower right corner to back to Device screen.
+11. Users can conduct surveying work after the rover receiver receives
+correction data (with correction LED flashes once per second) and gets
+fixed solution.
+5.3.2. RECEIVING CORRECTIONS USING INTERNAL CELLULAR MODEM
+1. Insert a SIM card into SIM card slot of the receiver (please see 2.4.
+Inserting battery and SIM card for instruction) and the power on the
+receiver.
+2. Turn on the controller → run LandStar 6 → create a new project or open
+i80 GNSS Receiver User Guide  Page 45
+
+=== Page 48 ===
+5. Rover station setup and operation
+an existing project → establish the connection with receiver via
+Bluetooth or Wi-Fi (see 2.7. Connecting to a controller for the
+operations).
+3. After successful connection, tap Rover Config in the Device screen.
+4. In Rover Config screen, configure the related parameters from the
+dropdown list or enter the value with the soft keyboard: Data Format,
+Elevation Mask, PDOP Limit, Safe Mode and Iono Condition.
+Note – Select the Data Format the same as that of base receiver.
+5. Configure the antenna parameters as follows:
+Type field: tap next to Type field to select CHCi80 as antenna type.
+Measure To field: select Bottom from the dropdown list.
+Height field: enter the height (in meters) of the range pole you are
+using.
+6. If required, tick Warning when base changed option → tap in the
+lower right corner to save the settings and go back to Device screen.
+7. Tap Communication Mode → select Network for Mode field.
+8. Configure the network parameters as follows:
+Protocol field: select the protocol according to your need.
+IP Addr field: enter the IP address and the Port with the soft keyboard,
+or tap next to this field to select the predefined
+service.
+Source field: tap next to this field to get the source table list, and
+i80 GNSS Receiver User Guide  Page 46
+
+=== Page 49 ===
+5. Rover station setup and operation
+then tap to select the suitable source table.
+User Name field: enter the user name of the network (such as NTRIP
+network), if required.
+Password field: enter the user name of the network (such as NTRIP
+network), if required.
+9. Tap to confirm and save the settings.
+10. After the service is successfully logged on, tap in the lower right
+corner to back to Device screen.
+11. Users can conduct surveying work after the rover receiver receives
+correction data (with correction LED flashes once per second) and gets
+fixed solution.
+i80 GNSS Receiver User Guide  Page 47
+
+=== Page 50 ===
+5. Rover station setup and operation
+Note – Before switch to other communication mode, please tap in
+Communication Mode screen to break the connection to the network.
+5.3.3. RECEIVING CORRECTIONS USING CELLULAR MODEM IN THE
+CONTROLLER
+1. Power on the receiver.
+2. Insert a SIM card into SIM card slot of your controller, and then turn on
+the controller to establish network connection (please refer to
+corresponding user guide of the controller that you are using for
+instruction).
+3. Run LandStar 6 on the controller → create a new project or open an
+existing project → establish the connection with receiver via Bluetooth
+or Wi-Fi (see 2.7. Connecting to a controller for the operations).
+4. After successful connection, tap Rover Config in the Device screen.
+5. In Rover Config screen, configure the related parameters from the
+dropdown list or enter the value with the soft keyboard: Data Format,
+Elevation Mask, PDOP Limit, Safe Mode and Iono Condition.
+Note – Select the Data Format the same as that of base receiver.
+6. Configure the antenna parameters as follows:
+Type field: tap next to Type field to select CHCi80 as antenna type.
+Measure To field: select Bottom from the dropdown list.
+Height field: enter the height (in meters) of the range pole you are
+using.
+7. If required, tick Warning when base changed option → tap in the
+lower right corner to save the settings and go back to Device screen.
+i80 GNSS Receiver User Guide  Page 48
+
+=== Page 51 ===
+5. Rover station setup and operation
+8. Tap Communication Mode → select PDA Network for Mode field.
+9. Configure the network parameters as follows:
+Protocol field: select the protocol according to your need.
+IP Addr field: enter the IP address and the Port with the soft keyboard,
+or tap next to this field to select the predefined
+service.
+Source field: tap next to this field to get the source table list, and
+then tap to select the suitable source table.
+User Name field: enter the user name of the network (such as NTRIP
+network), if required.
+Password field: enter the user name of the network (such as NTRIP
+network), if required.
+10. Tap to log-in the network service.
+i80 GNSS Receiver User Guide  Page 49
+
+=== Page 52 ===
+5. Rover station setup and operation
+11. After the successful login, tap in the lower right corner to back to
+Device screen.
+12. Users can conduct surveying work after the rover receiver receives
+correction data (with correction LED flashes once per second) and gets
+fixed solution.
+Note – Before switch to other communication mode, please tap in
+Communication Mode screen to break the connection to the network.
+i80 GNSS Receiver User Guide  Page 50
+
+=== Page 53 ===
+6. SURVEY WITH LANDSTAR 6 SOFTWARE
+The CHC Landstar 6 Software (“LandStar 6”) is a field survey software which
+developed based on more than ten years of development experience of CHC
+and feedback of surveyors from different fields of application. LandStar 6
+provides with a complete set of features for any survey projects, including
+data collection, stakeout, COGO (Coordinate Geometry) function, and more,
+which makes this software an ideal option for everyday field work.
+This chapter briefly introduces the basic survey workflows of LandStar 6,
+combining with i80 GNSS receiver.
+6.1. NEW PROJECT
+Turn on the controller, run LandStar 6 software and establish the connection
+with receiver via Bluetooth or Wi-Fi (see 2.7. Connecting to a controller for
+the operations), and then create a new project or open an existing project
+before measuring any points, or making any calculations.
+To create a new project:
+1. Tap button on the lower left corner of the initial interface that the
+LandStar 6 starts with.
+2. Enter the Project name and Create by (operator), select Time zone from
+the dropdown list, and then tap button.
+i80 GNSS Receiver User Guide  Page 51
+
+=== Page 54 ===
+6. Survey with LandStar 6 software
+Note – Also, users can configure other parameters, such as Create By
+(operator) and time zone, according to your need.
+3. Select one coordinate system from the template list, or tap default
+(from template) if there is no suitable template, and then tap
+button.
+4. Confirm the ellipsoid information or select one ellipsoid from the
+dropdown list for Name field, and then tap button.
+i80 GNSS Receiver User Guide  Page 52
+
+=== Page 55 ===
+6. Survey with LandStar 6 software
+5. In DatumWidget screen, select one Model from the dropdown list.
+There are three model options available:
+a) NONE: No transformation parameters are needed to be entered.
+b) Bursa 7 Parameter: Users need to enter seven parameters for
+local transformation, including translation, rotation and scale.
+c) Molodensky 3 Parameter: Users need to enter three translation
+parameters for local transformation.
+Note – To configure the parameters for Bursa 7 Parameter option and
+Molodensky 3 Parameter option, users need to tap button to unlock the
+editing function.
+Tip – The default login values of editing function are “admin” for Name and
+i80 GNSS Receiver User Guide  Page 53
+
+=== Page 56 ===
+6. Survey with LandStar 6 software
+“123456” for Password.
+6. Select one projection from the dropdown list, configure the projection
+related parameters, and then tap button to save the new project.
+7. The project name appears in the title area of the main menu.
+6.2. KEY IN POINTS
+1. In the main menu, tap Data → tap Point Management.
+2. Tap button in the lower left corner of Point Data Management
+screen, and then configure the related parameters of the new point as
+follows:
+Name field: enter the point name.
+i80 GNSS Receiver User Guide  Page 54
+
+=== Page 57 ===
+6. Survey with LandStar 6 software
+Code field: enter the code of the point, if required.
+CRS field: select the coordination system from the dropdown list. The
+available options are: Local and WGS84.
+Role field: select the role of the point from the dropdown list. The
+available options are: Null, To Stake Out and Control.
+X, Y, H field: enter the local grid coordinate of the point.
+3. Tap button in the lower right corner of New point screen to save
+the point.
+6.3. MEASURE POINTS
+Note – To ensure the accuracy of the coordinates measured, please perform
+measurements after the rover receiver receives correction data (with
+correction LED flashes once per second) and gets fixed solution.
+6.3.1. MEASURE POINTS IN CONVENTIONAL MODE
+1. In the main menu, tap Survey → tap Point Survey.
+2. Enter the point name in the input frame on the top left corner.
+Notes
+ The system will automatically increment the numeric component of
+the measured point name.
+ The measured points will be automatically incremented from “P1”,
+by default.
+3. If necessary, enter the feature code in the input frame on the top right
+corner.
+4. Tap button to select a measurement mode in the pop-up
+window.
+Notes
+ Users can tap button to configure the settings of each
+i80 GNSS Receiver User Guide  Page 55
+
+=== Page 58 ===
+6. Survey with LandStar 6 software
+measurement method in the pop-up Survey Option screen.
+ The auto measure function is available for three measurement
+modes: Topo Mode, Rapid Mode and Compensated Mode (require
+the calibration of tilt sensor beforehand, see 6.3.2. Survey with tilt
+sensor for reference).
+When untick Auto measure in the Survey Option screen:
+5. If the settings of the selected measurement method have been
+changed, tap button in the lower right corner of the Survey Option
+screen to save the change and go back to the Point Survey screen.
+6. Tap button, hold the range pole until the countdown timer
+disappears, and then move to next point to continue.
+When tick Auto measure in the Survey Option screen:
+i80 GNSS Receiver User Guide  Page 56
+
+=== Page 59 ===
+6. Survey with LandStar 6 software
+Note – Users can configure the Tilt Tolerance option to define the maximum
+radius that the receiver can tilt and be considered in tolerance. The allowable
+range is 0.001m to 1.000m. And the maximum tilt angle is calculated by
+arctan(Tilt Tolerance/antenna height).
+5. If the settings of the selected measurement method have been
+changed, tap button in the lower right corner of the Survey Option
+screen to save the change and go back to the Point Survey screen.
+6. Tap button in the tool bar to display the eBubble.
+7. Tap button → a “Waiting to move” message appears over the
+eBubble → tilt the range pole (exceeding the specified tilt tolerance).
+8. A “Waiting for level” message appears over the eBubble → move the
+receiver to the target measuring point → level the range pole.
+i80 GNSS Receiver User Guide  Page 57
+
+=== Page 60 ===
+6. Survey with LandStar 6 software
+9. When the range pole is within the tilt tolerance, a “Waiting for stable”
+message appears.
+10. Hold the range pole for more than 2 seconds and the point will
+automatically begin measuring.
+11. When the countdown timer disappears, tilt the range pole outside of
+the tilt tolerance, and then move to next point to continue.
+12. To exit the Auto Measure mode, tap button.
+6.3.2. SURVEY WITH TILT SENSOR
+The i80 receiver is integrated with tilt sensor, which allows the use of
+eBubble (electronic bubble) and tilt compensation. The tilt compensation
+allows the collection of points even when the receiver is tilted up to 30
+degrees off plumb. When the terrain or structures around the point do not
+allow full plumbing of the receiver, the built-in tilt sensor will compensate
+i80 GNSS Receiver User Guide  Page 58
+
+=== Page 61 ===
+6. Survey with LandStar 6 software
+for the tilt of the range pole. The eBubble can be displayed in the lower left
+corner of any survey window within the CHC LandStar 6 software.
+To bring the eBubble and tilt compensation into full play, it is very important
+to ensure the integrated tilt sensor is correctly calibrated. When calibrating
+the integrated tilt sensor, users need to make sure that a range pole or a
+tripod with tribrach have been well calibrated. The quality of the integrated
+tilt sensor calibration is directly related to the quality of the mechanic
+bubble and its calibration.
+The integrated tilt sensor calibration is performed within the CHC LandStar 6
+software. To calibrate the integrated tilt sensor, place the receiver on a
+stable range pole or tripod with tribrach. Level the receiver using the
+mechanical bubble on the range pole or tribrach.
+6.3.2.1. Calibrating the tilt sensor
+1. In the main menu, tap Settings → tap Survey Options → select Ebubble
+Option tab.
+2. Configure the Sensitivity, Response and Age Limit from the dropdown
+lists.
+3. Tap button in the lower left corner → a message will pop up
+asking user to confirm that the device is level → tap Yes button.
+4. A progress message will appear to indicate that the calibration is in
+progress.
+i80 GNSS Receiver User Guide  Page 59
+
+=== Page 62 ===
+6. Survey with LandStar 6 software
+5. Once the calibration is complete, the green electronic bubble will be
+centered in the inner circle.
+6. Tap button in the lower left corner → a pop-up message will
+prompt user rotate the device follow the illustration during the
+compass calibration → tap Yes button.
+7. Perform the calibration according to the graphic displayed on the
+screen.
+8. Once the calibration is complete, tap button in the lower right
+i80 GNSS Receiver User Guide  Page 60
+
+=== Page 63 ===
+6. Survey with LandStar 6 software
+corner.
+6.3.2.2. Measure points in compensated mode
+9. Go back to the main menu, tap Survey → tap Point Survey.
+10. Enter the point name in the input frame on the top left corner.
+Notes
+ The system will automatically increment the numeric component of
+the measured point name.
+ The measured points will be automatically incremented from “P1”,
+by default.
+11. If necessary, enter the feature code in the input frame on the top right
+corner.
+12. Tap button → select Compensated Mode in the pop-up window.
+Notes
+ Users can tap button to configure the settings of the
+Compensated Mode in the pop-up Survey Option screen.
+ The auto measure function is available for the Compensated Mode.
+When untick Auto measure in the Survey Option screen:
+i80 GNSS Receiver User Guide  Page 61
+
+=== Page 64 ===
+6. Survey with LandStar 6 software
+13. If the settings of the Compensated Mode have been changed, tap
+button in the lower right corner of the Survey Option screen to save the
+change and go back to the Point Survey screen.
+14. Tilt the range pole within 30 degrees off plumb → Tap button,
+hold the range pole until the countdown timer disappears → move to
+next point to continue.
+Tip – The color of eBubble indicates different tilt status of the range pole. Red
+means the tilt of the range pole exceeds 30 degrees; however, yellow or
+green means the tilt is within 30 degrees or 24 degrees.
+When tick Auto measure in the Survey Option screen:
+i80 GNSS Receiver User Guide  Page 62
+
+=== Page 65 ===
+6. Survey with LandStar 6 software
+13. If the settings of the Compensated Mode have been changed, tap
+button in the lower right corner of the Survey Option screen to save the
+change and go back to the Point Survey screen.
+14. Tap button → a “Waiting to move” message appears over the
+eBubble → tilt the range pole to more than 30 degrees.
+15. A “Waiting for level” message appears over the eBubble → move the
+receiver to the target measuring point → tilt the range pole within 30
+degrees.
+i80 GNSS Receiver User Guide  Page 63
+
+=== Page 66 ===
+6. Survey with LandStar 6 software
+16. When the range pole is within 30 degrees, a “Waiting for stable”
+message appears → hold the range pole for more than 2 seconds and
+the point will automatically begin measuring.
+17. When the countdown timer disappears, tilt the range pole by more
+than 30 degrees, and then move to next point to continue.
+18. To exit the Auto Measure mode, tap button.
+6.4. POINT ADJUST (SITE CALIBRATION)
+Point adjust, also known as “site calibration”, is used to transform WGS-84
+coordinates into local grid coordinates.
+Notes
+ General speaking, if a three- or seven-parameter datum
+transformation has been configured for project, users can skip the
+i80 GNSS Receiver User Guide  Page 64
+
+=== Page 67 ===
+6. Survey with LandStar 6 software
+site calibration and the coordinates measured will be transformed
+automatically into local grid coordinates.
+ If a projection and datum transformation have already been
+specified, users can reduce any discrepancies between the WGS-84
+coordinates and the local grid coordinates by performing a site
+calibration.
+ To perform the site calibration, users need to measure the control
+points with GNSS receiver first.
+To perform site calibration:
+1. In the main menu, tap Survey → tap Point Adjust.
+2. Tap button in the lower left corner to add point pair(s).
+3. In the pop-up screen, tap button on the upper side of the screen
+to add the existing GNSS point or key in a GNSS point.
+4. Tap button on the lower side of the screen to add the existing
+known point or key in a known point.
+5. Tap button to go down to the bottom of the page.
+6. Select the adjustment method from the dropdown list next to Method
+field.
+i80 GNSS Receiver User Guide  Page 65
+
+=== Page 68 ===
+6. Survey with LandStar 6 software
+Note – Users can determine whether this point pair is involved in the
+computation of either horizontal or vertical adjustment, or both.
+7. Tap button in the lower right corner to save the point pair.
+8. Continue the Step 2 to Step 7 to add all the point pairs.
+9. If necessary, select the fit method for vertical adjustment from the
+dropdown list next to Fit Method field.
+Notes
+ The fit methods of horizontal and vertical adjustment are “TGO”
+and “Fixed difference” respectively, by default.
+ There are four available fit methods for vertical adjustment: Fixed
+difference, Plane fitting, Curved surface fitting and TGO.
+1. The “Fixed difference” fit method is used when the measuring
+surface is almost horizontal, and it requires at least 1 point pair
+with elevation information to be involved in the computation.
+i80 GNSS Receiver User Guide  Page 66
+
+=== Page 69 ===
+6. Survey with LandStar 6 software
+2. The “Plane fitting” fit method is used when the measuring
+surface is level, and it requires at least 3 point pair with
+elevation information to be involved in the computation.
+3. The “Curved surface fitting” fit method is used when the
+measuring surface is uneven, and it requires at least 6 point
+pair with elevation information to be involved in the
+computation.
+4. The “TGO” fit method is almost the same with “Fixed
+difference”, except that this method is more convenient for
+computation using computer.
+10. Tap button to perform the calibration, and then the “HError” and
+“VError” information related to each point pair will be displayed.
+Note – For best results, make sure that the control points are evenly
+distributed to the extent of the job area.
+11. Tap button → a message will pop up asking user whether to
+replace parameters of current project.
+i80 GNSS Receiver User Guide  Page 67
+
+=== Page 70 ===
+6. Survey with LandStar 6 software
+12. If tap YES button, the parameters calculated by this calibration will be
+applied to the coordinate system of the current project. Also, the Point
+Adjust screen will skip to the CRS Params screen to help user check the
+horizontal and vertical adjustments in Plane Adjust tab and Height
+Adjust tab.
+Note – To check the horizontal and vertical adjustments in Plane Adjust tab
+and Height Adjust tab, users need to tap button to unlock the display
+function first.
+i80 GNSS Receiver User Guide  Page 68
+
+=== Page 71 ===
+6. Survey with LandStar 6 software
+Tip – The default login values of display function are “admin” for Name and
+“123456” for Password.
+6.5. BASE SHIFT
+Typically, the Real-time kinematic (RTK) operation requires a data link to
+send observations or corrections from the base station to the rover, and
+then the rover will calculates its position in real time.
+Within a project, when the base receiver is restarted or moved, the base
+coordinated system will shift each time the position of base station is
+changed. Normally, the coordinates determined by the base station that set
+up on a control point should be in the same coordinate system. However,
+coordinates determined by the base station that set up on an autonomous
+point should be carried out a base shift, which provided by CHC LandStar 6
+software, to keep their base station coordinate the same as the initial
+coordinate system.
+Notes – To perform the base shift, make sure that the two base stations have
+been linked together by at least one common point that sharing with the
+same position, which means that the common point not only has the
+coordinate determined by the initial coordinate system, but also own the
+coordinate surveyed from another base coordinate system that need to be
+shifted.
+To perform a base shift:
+1. In the main menu, tap Survey → tap Base Shift.
+2. Tap button next to the GNSS Point field to select the common
+point surveyed from the base coordinate system that need to be
+i80 GNSS Receiver User Guide  Page 69
+
+=== Page 72 ===
+6. Survey with LandStar 6 software
+shifted.
+3. Tap button next to the Known Point field to select that common
+point determined by the initial coordinate system.
+4. The offset information of base coordinate system that need to be
+shifted will be displayed automatically.
+5. Tap button → a message will pop up asking user whether to
+translate the coordinates determined by the current base coordinate
+system to the initial one.
+6. If tap YES button, all the coordinates determined by the current base
+coordinate system will be translated. Also, the Point Data Management
+screen will pop up to help user check whether the coordinates
+determined by the current base coordinate system have changed.
+i80 GNSS Receiver User Guide  Page 70
+
+=== Page 73 ===
+6. Survey with LandStar 6 software
+Note – The coordinates translated are local grid coordinates rather than
+WGS-84 coordinates.
+6.6. DATA EXPORT
+1. In the main menu, tap Project → tap Export.
+2. Select one data format (for example, Custom Format) according to your
+requirement.
+3. Tick the point type(s) → enter the File Name → select the File Type
+from the dropdown list → select the path that used to store the file.
+4. Tap button → the software will prompt whether the file has been
+successfully exported.
+i80 GNSS Receiver User Guide  Page 71
+
+=== Page 74 ===
+6. Survey with LandStar 6 software
+Notes
+ When select custom format, users can tap button next to File
+Tpye field to define the file format according to your requirement.
+ After the file has been successfully exported in the controller,
+connect the controller to the office computer for file transfer (please
+refer to corresponding user guide of the controller that you are
+using for instruction) and postprocessing.
+6.7. RECEIVER REGISTRATION
+When the software prompt that the receiver is overdue, users need to
+contact your local CHC dealer to get the registration code.
+To register the receiver:
+1. In the main menu, tap Device → tap Device Info.
+2. Tap button in the lower left corner.
+3. Enter the registration code in the pop up window.
+i80 GNSS Receiver User Guide  Page 72
+
+=== Page 75 ===
+6. Survey with LandStar 6 software
+4. Tap Finish button to complete the registration, and then the software
+will show the expire date.
+i80 GNSS Receiver User Guide  Page 73
+
+=== Page 76 ===
+7. CONFIGURING THROUGH A WEB BROWSER
+Supported browsers:
+ Google Chrome
+ Microsoft Internet Explorer
+○R
+version 10, or higher
+To connect to the receiver through a web browser:
+1. Turn on the Wi-Fi of the receiver.
+2. Search the wireless network named as GNSS-XXXXXXX (the SN of your
+receiver) on your computer, and then establish the connection.
+3. After the successful connection between your computer and the
+receiver, enter the IP address of the receiver into the address bar of the
+web browser on your computer:
+4. The web browser prompts you to enter a login account and password:
+The default login account for the receiver is:
+ Login Account: admin
+ Password: password
+Note – Tick remember me option, and then the browser will remember the
+Login Account and Password you entered for the next time you enter this
+login screen.
+5. Once you are logged in, the web page appears as follows:
+i80 GNSS Receiver User Guide  Page 74
+
+=== Page 77 ===
+7. Configuring through a web browser
+This web page shows the configuration menus on the left of the browser
+window, and the setting on the right. Each configuration menu contains the
+related submenus to configure the receiver and monitor receiver
+performance.
+This chapter describes each configuration menu.
+To view the web page in another language, select the corresponding
+language name from the dropdown list on the upper right corner of the web
+page.
+Currently, three languages are available:
+7.1. STATUS MENU
+This menu provides a quick link to review the receiver's position information,
+satellites tracked, runtime, current data log status, current outputs, available
+memory, and more.
+i80 GNSS Receiver User Guide  Page 75
+
+=== Page 78 ===
+7. Configuring through a web browser
+7.1.1. POSITION SUBMENU
+This page shows the relevant position information about the receiver's
+position solution which including the position, DOP values, satellites used
+and tracked, and the receiver clock information.
+7.1.2. OPERATION SUBMENU
+Lists several important items to help you understand how the receiver is
+being used and its current operating condition. Items include the identities
+of currently tracked satellites, internal and external storage usage rate, how
+long the receiver has been operational, state of the internal battery, power
+source state, files being logged, and data streams being output. With this
+information, it is easy to tell exactly what functions the receiver is
+performing:
+i80 GNSS Receiver User Guide  Page 76
+
+=== Page 79 ===
+7. Configuring through a web browser
+7.1.3. GOOGLE MAP SUBMENU
+Tap this submenu to show the location of the receiver on Google map.
+i80 GNSS Receiver User Guide  Page 77
+
+=== Page 80 ===
+7. Configuring through a web browser
+7.2. SATELLITES MENU
+Use the Satellites menu to view satellite tracking details and enable/disable
+GPS, SBAS, GLONASS, BDS and Galileo constellations. These menus include
+tabular and graphical displays to provide all required information on satellite
+tracking status.
+7.2.1. SATELLITE TRACK TABLE SUBMENU
+Provides the status of satellites tracked in general, such as the satellite ID,
+satellite type, attitude angle, azimuth angle, L1 SNR, L2 SNR, L5 SNR and
+enable/disable status of each one.
+7.2.2. SATELLITE TRACK DIAGRAM SUBMENU
+The following figure is an example of satellite track diagram page. Users can
+determine the satellite types and the corresponding SNR of L-band carriers
+to be displayed in any combination.
+i80 GNSS Receiver User Guide  Page 78
+
+=== Page 81 ===
+7. Configuring through a web browser
+7.2.3. SKYPLOT SUBMENU
+The following figure is an example of Skyplot page.
+7.3. RECEIVER SETTINGS MENU
+Use this menu to configure settings such as the antenna type and height,
+elevation mask and PDOP setting, the reference station coordinates, receiver
+resetting and web interface language:
+i80 GNSS Receiver User Guide  Page 79
+
+=== Page 82 ===
+7. Configuring through a web browser
+7.3.1. INTRODUCTION SUBMENU
+This submenu shows the receiver information and reference station
+information, including antenna related information, elevation mask angle,
+reference station work mode and position, etc.
+7.3.2. ANTENNA PARAM SETTINGS SUBMENU
+Use this screen to configure all of the items relating to the GNSS antenna.
+You must enter the correct values for all antenna-related fields, as the
+choices you make significantly affect the accuracy for logged data and
+broadcast correction data:
+i80 GNSS Receiver User Guide  Page 80
+
+=== Page 83 ===
+7. Configuring through a web browser
+7.3.3. REFERENCE STATION SETTINGS SUBMENU
+Use this screen to configure settings such as the station coordinates and the
+broadcast station identifiers. You must enter accurate information in these
+fields, as this data significantly affects the accuracy of logged data files and
+broadcast correction data:
+For Reference Station Mode:
+There are three modes available:
+a) Auto Rover: The receiver will serve as a rover after this mode is
+enabled, and then receive correction data through the working
+mode set last time.
+i80 GNSS Receiver User Guide  Page 81
+
+=== Page 84 ===
+7. Configuring through a web browser
+b) Auto Base: The receiver will serve as a base after this mode is
+enabled, and then broadcast correction data based on coordinate
+inputted by user, or obtained through autonomous positioning
+automatically.
+c) Manual Base: The receiver will serve neither as a base or a rover
+after this mode is enabled. Users need to configure the receiver
+manually.
+For Reference Latitude and Reference Longitude:
+There are mainly three methods to enter the reference coordinates and
+shown as follows:
+a) Acquire Current Position: Click this button to acquire current
+position obtained through autonomous positioning automatically.
+b) Manual Input: Manually input the coordinate of a control point.
+c) From CORS: After the receiver logging in CORS, the software can
+record the coordinate of current position based on fix solution.
+For Sample for Average:
+Users can determine the positioning limit and sampling amount. The
+positioning limit falls into two types:
+a) Single Solution Coordinates: Collect the coordinates of receiver
+obtained through autonomous positioning.
+b) Fixed Solution Coordinates: Only collect coordinates of receiver
+with a fixed solution.
+After the configuration of positioning limit and sampling amount, click
+to carry out sampling and averaging → the progress bar will
+show the progress → the result will be served as the coordinate of
+current positon.
+If users need to save the changes, please tap button.
+7.3.4. RECEIVER RESET SUBMENU
+Use this screen to completely or partially reset the receiver:
+i80 GNSS Receiver User Guide  Page 82
+
+=== Page 85 ===
+7. Configuring through a web browser
+7.3.5. LANGUAGES SUBMENU
+Use this screen to select the web interface language:
+7.4. DATA RECORDING MENU
+Use the Data Logging menu to set up the receiver to log static GNSS data and
+to view the logging settings. You can configure settings such as observable
+rate, recording rate, continuous logging limit, and whether to auto delete old
+files if memory is low. This menu also provides the controls for the FTP push
+feature:
+7.4.1. LOG SETTINGS SUBMENU
+Shows the data logging status, internal and external storage usage and data
+logging status of each session. Also, users can configure the data logging
+settings for each session, including recording name, store location, storage
+limit, store formats, start time, etc.
+i80 GNSS Receiver User Guide  Page 83
+
+=== Page 86 ===
+7. Configuring through a web browser
+To edit the settings of each session, click the Modify button to the right of
+the required session, and then the Recording Edit screen appears:
+In this screen, you can configure all the data logging parameters, and
+determine whether the recording files will be affected by the FTP Push.
+The parameters are mainly as follows:
+ Recording Name: The name of this logging session.
+ Sample Interval: Select the observable rate from the dropdown list.
+ Store Location: Determine whether to store at internal storage or
+i80 GNSS Receiver User Guide  Page 84
+
+=== Page 87 ===
+7. Configuring through a web browser
+external storage.
+ Start Time: Set the start time of data logging in UTC. Select Yes or
+No option below to determine whether to start data logging from
+the start time defined, or immediately after this session is switched
+on.
+ Duration Time: Set the duration of data logging.
+ Storage: Set the storage space of this session.
+ Recycle Storage: Select Yes or No option to determine whether to
+auto delete old files if the storage space is full.
+ Storage Format: Set the data format of the logged data.
+ FTP Push: Decide whether to push the stored files to the FTP server
+of your choice.
+Tap button to save the settings and back to the Log Settings
+screen. Also, users can click to abandon the changed settings
+and back to Log Settings screen.
+Note – To modify data logging parameters, make sure the data logging
+session is switched off.
+To switch on or off ANY data logging session, tap the ON or OFF button to
+the right of the required session.
+To delete the recorded files of ANY data logging session, tap the Clear button
+to the right of the required session.
+To delete the recorded files of ALL data logging sessions, tap the Clear ALL
+Accounts button.
+7.4.2. FTP PUSH SETTINGS SUBMENU
+Use this screen to configure the receiver to push stored files to the FTP
+server of your choice. Only files that are configured to use FTP push are
+transmitted.
+Tap Modify button to the right of the required FTP server and the FTP Push
+Settings screen appears:
+i80 GNSS Receiver User Guide  Page 85
+
+=== Page 88 ===
+7. Configuring through a web browser
+7.4.3. FTP PUSH RECORDING SUBMENU
+Shows the related information about the recorded filed that be pushed. And
+users can tap Clear Ftp Send Log button in the upper right corner to clear
+the log of FTP Push operations.
+7.4.4. DATA DOWNLOAD SUBMENU
+In this submenu, users can download the data files that recorded in the
+internal storage through the internal FTP site.
+1. Click this submenu, and then the log on dialogue box will prompt you to
+enter a user name and password:
+The default logon account for the internal FTP site is:
+ User name: ftp
+ Password: ftp
+2. Click the directory named as “repo” to view and download the files
+currently stored on the receiver:
+i80 GNSS Receiver User Guide  Page 86
+
+=== Page 89 ===
+7. Configuring through a web browser
+3. To find the file need to be downloaded, click the name of data logging
+session → the date of file that be recorded → the format of the file →
+the name of the target file.
+4. To download a file, left-click the name of the target file → download the
+file according to the prompts.
+7.5. IO SETTINGS MENU
+Use the IO Settings menu to set up all receiver outputs and inputs. The
+receiver can output CMR, RTCM, Raw data, Ephemeris data, GPGGA, GPGSV,
+on TCP/IP, UDP, serial port, or Bluetooth ports.
+7.5.1. IO SETTINGS SUBMENU
+The following figure shows an example of the screen that appears when you
+select this submenu.
+i80 GNSS Receiver User Guide  Page 87
+
+=== Page 90 ===
+7. Configuring through a web browser
+In this submenu, users can configure 6 types of input and output settings.
+1. RTK Client
+After configuring the settings of RTK client, users can log on CORS or APIS.
+Tap the Connect button to the right → the IO Settings screen will appear →
+choose one of the connection protocols among the NTRIP, APIS_BASE and
+APIS_ROVER → configure the related parameters → click to
+log on CORS or APIS.
+ Connection Protocol: NTRIP
+ Connection Protocol: APIS_BASE
+i80 GNSS Receiver User Guide  Page 88
+
+=== Page 91 ===
+7. Configuring through a web browser
+ Connection Protocol: APIS_ROVER
+2. TCP/UDP Client
+Tap the Connect button to the right of required TCP/UDP Client → the IO
+Settings screen will appear → select the connection protocol between TCP
+and UDP → enter the IP and Port of the target server → configure messages
+that you want to output to the target server → click to save
+and complete the connection.
+i80 GNSS Receiver User Guide  Page 89
+
+=== Page 92 ===
+7. Configuring through a web browser
+3. TCP Server/NTRIP Caster
+Tap the Connect button to the right of required TCP Server/NTRIP Caster →
+the IO Settings screen will appear → select one of the connection protocols
+between NTRIP and TCP → configure the other related parameters → click
+to save the settings and open the server.
+ Connection Protocol: NTRIP
+ Connection Protocol: TCP
+4. COM Port
+i80 GNSS Receiver User Guide  Page 90
+
+=== Page 93 ===
+7. Configuring through a web browser
+Tap the Settings button to the right of COM Port → the Serial Port Setup
+screen will appear → select Baud Rate used to transmit data → configure the
+messages that you want to output through the serial port → click
+to save the settings and start to transmit.
+5. Bluetooth
+Tap the Settings button to the right of Bluetooth → the Bluetooth Set screen
+will appear → configure the messages that you want to transmit through
+Bluetooth → click to save the settings and start to transmit.
+6. Radio
+Tap the Settings button to the right of Radio → the Radio Settings screen will
+appear → select the format of differential data that you want to transmit
+i80 GNSS Receiver User Guide  Page 91
+
+=== Page 94 ===
+7. Configuring through a web browser
+through radio from the dropdown list → click to save the
+settings and start to transmit.
+7.6. GPRS MENU
+Use this menu to check and configure the network settings:
+7.6.1. NETWORK INFO SUBMENU
+The following figure shows an example of the screen that appears when you
+select this submenu:
+7.6.2. NETWORK SET SUBMENU
+Use this submenu to configure network settings, including GPRS model
+status, network mode, dialing status, APN, etc.
+i80 GNSS Receiver User Guide  Page 92
+
+=== Page 95 ===
+7. Configuring through a web browser
+7.7. WIFI MENU
+Use this menu to check and configure the Wifi settings:
+7.7.1. WIFI INFO SUBMENU
+The following figure shows an example of the screen that appears when you
+select this submenu:
+i80 GNSS Receiver User Guide  Page 93
+
+=== Page 96 ===
+7. Configuring through a web browser
+7.7.2. WIFI SETTINGS SUBMENU
+Use this submenu to configure the related parameters of the Wi-Fi settings,
+including power status, wifi mode, encrypt type, password, etc.
+7.8. BLUETOOTH SET MENU
+Use this menu to configure Bluetooth settings.
+7.8.1. BLUETOOTH SET SUBMENU
+The following figure shows an example of the screen that appears when you
+select this submenu:
+7.9. RADIO SETTINGS MENU
+Use this menu to check and configure radio related settings, including
+protocol, OTA baud rate, frequency, etc.
+i80 GNSS Receiver User Guide  Page 94
+
+=== Page 97 ===
+7. Configuring through a web browser
+7.9.1. RADIO INFO SUBMENU
+The following figure shows an example of the current configuration
+information about the internal radio:
+7.9.2. RADIO SETTINGS SUBMENU
+Use this submenu to configure radio settings, including radio status, whether
+to switch on auto start or not, protocol, transmitting power, radio frequency,
+etc.
+7.10. NETWORK SERVICE MENU
+Use this menu to configure the receiver’s HTTP port, and the username and
+i80 GNSS Receiver User Guide  Page 95
+
+=== Page 98 ===
+7. Configuring through a web browser
+password of internal FTP site:
+7.10.1. HTTP SUBMENU
+The following figure shows an example of the screen that appears when you
+select this submenu:
+7.10.2. FTP SERVICE SUBMENU
+The following figure shows an example of the screen that appears when you
+select this submenu:
+7.11. FIRMWARE MENU
+Use this menu to check the current firmware information, download the
+system log, update the receiver firmware, download or update the
+configuration file and register the receiver, and more:
+i80 GNSS Receiver User Guide  Page 96
+
+=== Page 99 ===
+7. Configuring through a web browser
+7.11.1. FIRMWARE INFO SUBMENU
+Use this submenu to check the current firmware information. The following
+figure shows an example of the firmware information.
+7.11.2. SYSTEM LOG SUBMENU
+Use this submenu to download the system log of the receiver.
+7.11.3. FIRMWARE UPDATE SUBMENU
+Use this submenu to load new firmware to the receiver across the network.
+Tap the Browse button to locate the upgrade file → tap Confirm button to
+confirm the selected upgrading file and start upgrading.
+i80 GNSS Receiver User Guide  Page 97
+
+=== Page 100 ===
+7. Configuring through a web browser
+Notes
+ It may take about 3 or 4 minutes to complete the firmware
+upgrading. Do not touch the power button or unplug the power
+until the upgrading process is finished, or damage will be caused to
+the receiver.
+ The receiver will restart after the firmware upgrading is done, so
+users need to reconnect the receiver with your computer via Wi-Fi,
+and then log-in the receiver through a web browser to continue the
+configuration.
+7.11.4. CONFIG FILE SUBMENU
+In this submenu, users can download the configuration file by tapping
+button and determine a saving path to download the
+configuration file (.cfg file). Also, users can tap the Browse button to locate
+the existing configuration file → tap Confirm button to confirm the selected
+file and start updating.
+7.11.5. GNSS REGISTRATION SUBMENU
+Use this submenu to register the receiver. Paste or enter the registration
+code to the Registration Code field → tap Registration button to complete
+the registration.
+7.11.6. THE HARDWARE VERSION SUBMENU
+Use this submenu to check the hardware information, including main board
+version and core board version:
+i80 GNSS Receiver User Guide  Page 98
+
+=== Page 101 ===
+7. Configuring through a web browser
+i80 GNSS Receiver User Guide  Page 99
+
+=== Page 102 ===
+A. COMMUNICATION PORTS DEFINITION
+A.I. CHC I80 RECEIVER IO PORT (7-PIN LEMO PORT) DEFINITION
+PIN FUNCTION
+1 Ground ( - )
+2 Ground ( - )
+3 RS232-TX (Output)
+4 Not Used
+5 Not Used
+6 VIN
+7 RS232-RX (Input)
+A.II. CHC I80 RECEIVER USB PORT (7-PIN LEMO PORT)
+DEFINITION
+PIN FUNCTION
+1 Ground ( - )
+2 Ground ( - )
+3 VBUS
+4 DM
+5 DP
+6 VIN
+7 ID
+i80 GNSS Receiver User Guide  Page 100
+
+=== Page 103 ===
+CHC - Shanghai HuaCe Navigation Technology Ltd.
+Building C, NO. 599 Gaojing Road,
+Qingpu District, 201702 Shanghai, China
+Tel: +86 21 542 60 273
+Fax: +86 21 649 50 963
+Email: sales@chcnav.com | support@chcnav.com
+Website: www.chcnav.com
+i80 GNSS Receiver User Guide  Page 101
+

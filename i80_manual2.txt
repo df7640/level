@@ -1,0 +1,600 @@
+=== Page 1 ===
+CHC i80 GNSS Receiver
+Quick Start Guide
+
+=== Page 2 ===
+Copyright
+Copyright 2018 eGPS Solutions, Inc. | All rights
+reserved.
+Trademarks
+All product and brand names mentioned in this publication
+are trademarks of their respective holders.
+Safety Warnings
+The Global Positioning System (GPS) is operated by the
+U.S. Government, which is solely responsible for the
+accuracy and maintenance of the GPS network. Accuracy
+can also be affected by poor satellite geometry and
+obstructions, like buildings and heavy canopies.
+FCC Interference Statement
+This equipment has been designed to comply with the
+limits for a Class B digital device, pursuant to part 15 of the
+FCC Rules in Portable Mode. These limits are designed to
+provide reasonable protection against harmful interference
+in a residential installation.
+Operation is subject to the following two conditions:
+(1) this device may not cause harmful interference and
+(2) this device must accept any interference received,
+including interference that may cause undesired operation.
+1
+
+=== Page 3 ===
+Table of Contents
+1. Introduction
+1.1. Safety Information
+1.1.1. Warnings and Cautions........................4
+1.1.2. Regulations and Safety........................4
+1.1.3. Use and Care.......................................5
+1.2. Technical Support..............................................5
+1.3. Disclaimer..........................................................5
+1.4. Your Comments.................................................6
+2. Getting Started with the CHC i80
+2.1. About the Receiver............................................6
+2.2. Parts of the Receiver
+2.2.1. Front Panel...........................................7
+2.2.2. Lower Housing.....................................10
+2.2.3. Receiver Ports......................................10
+2.3. Batteries and Power
+2.3.1. Internal Battery
+2.3.1.1. Charging the Battery............. 12
+2.3.1.2. Battery Safety........................ 13
+2.3.2. External Power Supply........................ 14
+2.4. Inserting Battery and SIM Card.........................15
+2.5. Product with Accessories..................................16
+2.6. Connecting to an Office Computer...................17
+2.7. Connecting to Carlson SurvCE as a Network
+Rover..................................................................17
+A. Communication Ports Definition
+A.I. CHC i80 Receiver I/O Port (7-Pin Lemo
+Port) Definition..................................................22
+2
+
+=== Page 4 ===
+A.II. CHC i80 Receiver USB Port (7-Pin
+Lemo Port) Definition........................................22
+B. i80 Specifications........................................................ 23
+C. Contact Information..................................................... 26
+3
+
+=== Page 5 ===
+1. Introduction
+The CHC i80 GNSS Receiver Quick Start Guide describes
+how to set up and use the CHC i80 GNSS receiver.
+“The receiver” refers to the CHC i80 GNSS receiver unless
+otherwise stated.
+Even if you have used other Global Navigation Satellite
+Systems (GNSS) products before, eGPS Solutions
+recommends that you spend some time reading this manual
+to learn about the special features of this product.
+1.1. Safety Information
+1.1.1. Warnings and Cautions
+An absence of specific alerts does not mean that there are
+no safety risks involved.
+Warning or Caution information is intended to minimize the
+risk of personal injury and/or damage to the equipment.
+WARNING - A Warning alerts you to a potential
+misuse or wrong setting of the equipment.
+CAUTION - A Caution alerts you to a possible risk of
+serious injury to your person and/or damage to the
+equipment.
+1.1.2. Regulations and Safety
+The receivers contain a built-in wireless modem for signal
+communication through Bluetooth® wireless technology or
+through an external communication datalink. Regulations
+regarding the use of the wireless modem vary greatly from
+country to country. In some countries, the unit can be used
+4
+
+=== Page 6 ===
+without obtaining an end-user license. However, in some
+countries, administrative permissions are required. For
+license information, consult your local dealer. Bluetooth®
+operates in license-free bands.
+Before operating a CHC i80 GNSS receiver,
+determine if authorization or a license to operate the unit is
+required in your country. It is the responsibility of the
+end-user to obtain an operator’s permit or license for the
+receiver for the location or country of use.
+1.1.3. Use and Care
+This receiver is ruggedized to withstand tough
+environmental conditions that occur in the field. However,
+the receiver is a high-precision electronic instrument and
+should be treated with reasonable care.
+CAUTION - Operating or storing the receiver
+outside the specified temperature range will cause
+irreversible damage.
+1.2. Technical Support
+If you have a problem and cannot find the information you
+need in this manual or on the eGPS Solutions website
+www.egps.net, you can contact our technical support team
+at (770) 695-3361.
+1.3. Disclaimer
+Before using the receiver, please make sure that you have
+read and understood this Quick Start Guide, as well as the
+5
+
+=== Page 7 ===
+safety information. eGPS Solutions holds no
+responsibility for the incorrect operation by users and for
+the losses incurred by misunderstanding this guide.
+However, eGPS Solutions reserves the right to
+update and optimize the contents in this guide regularly.
+1.4. Your Comments
+Your feedback about this user guide will help us to improve
+it in the future. Please email your comments to
+info@egps.net.
+2. Getting Started with the CHC i80
+2.1. About the Receiver
+The CHC i80 GNSS receiver incorporates a GNSS engine,
+GNSS antenna, internal radio, 3.75G cellular modem,
+Bluetooth, WiFi and battery in a ruggedized and miniature
+unit. Either unit may be a base, rover, or used without other
+devices for static collection.
+The receiver can be used as part of a Network RTK GNSS
+system with Carlson SurvCE, MicroSurvey Field Genius or
+CHC LandStar7 Android software. Static positions can be
+stored in Rinex 2.11 format for easy OPUS submittal using
+only the receiver. The static data can be stored in internal
+memory, a USB flash drive using the optional OTG cable or
+sent to your FTP using the internal 3.75G GSM modem!
+When using the CHC i80 without additional
+equipment, configuration of the many features is
+accomplished through a web browser. CHC LandStar7 may
+also be downloaded from the Android app store. Static
+positions can be taken by pressing the function button for 5
+seconds.
+6
+
+=== Page 8 ===
+2.2. Parts of the Receiver
+The operating controls are all located on the front panel.
+Battery compartment and SIM card slot are located on the
+back. Serial ports and connectors are located on the
+bottom of the unit.
+2.2.1. Front Panel
+The following figure shows a front view of the receiver.
+Front Panel
+(Reference chart on the next page)
+7
+
+=== Page 9 ===
+Icon Light Light Status Description
+Color
+1. Satellites Blue Flash every Each satellite
+second found
+2. Corrections Green Flash every Base is
+second transmitting the
+corrections
+Green Flash every Rover is
+second receiving the
+corrections
+NOTE - The screen display comes up and notifies
+“Battery Low” when batteries need to be recharged.
+8
+
+=== Page 10 ===
+Function Button
+Power Button
+Name Description
+Function Button Press and hold for 5 seconds to start
+and stop static sessions.
+Power Button Works as a Power button:
+Press and hold this button for 3
+seconds to turn on or turn off the
+receiver
+Works as a Reset button:
+Hold Function button and press
+this button 5 times to reset the
+mainboard.
+9
+
+=== Page 11 ===
+2.2.2. Lower Housing
+The lower housing contains one TNC radio antenna
+connector, two communication and power ports,
+one 5/8 - 11 threaded insert and nameplate. SIM card slot
+and battery compartment are located on the back.
+2.2.3. Receiver Ports
+Continued on the next page
+10
+
+=== Page 12 ===
+Port Name Description
+I/O Port This port is a 7-pin Lemo
+connector that supports RS-232
+communications and external
+power.
+Users can use the optional GPS
+to PC Data Cable to realize
+RS-232 communications
+between the receiver and
+computer or controller. Also,
+users can use the 7-pin cable to
+transmit differential data to an
+external radio.
+USB Port This port is a 7-pin Lemo
+connector that supports USB
+communications and external
+power.
+Users can use the USB Cable
+supplied with the system to
+download the logged data to a
+computer.
+The optional OTG Cable can be
+used to upgrade the
+receiver firmware by connecting
+the receiver to a USB flash disk
+or directly log the static data to
+a USB flash disk.
+Radio Connect the UHF radio
+Antenna antenna to the internal radio
+Connector of the receiver. This connector
+is not used if you are using an
+external radio.
+11
+
+=== Page 13 ===
+2.3. Batteries and Power
+2.3.1. Internal Battery
+The receiver comes with two rechargeable lithium-ion
+batteries.
+2.3.1.1. Charging the Battery
+The rechargeable lithium-ion batteries are supplied
+partially charged. Charge the batteries completely before
+using for the first time. To charge the batteries, place them
+in the supplied charger and wait until the green light at
+each battery stops flashing and remains solid green.
+WARNING - Charge and use the rechargeable
+lithium-ion batteries only in strict accordance with
+the instructions. Charging or using the batteries in
+unauthorized equipment can cause an explosion or
+fire and can result in personal injury and/or
+equipment damage.
+To prevent injury or damage:
+• Do not charge or use the battery if it appears to be
+damaged or leaking.
+• Charge the lithium-ion battery only in a CHC i80
+charger that is specified to charge it. Be sure to
+follow all instructions that are provided with the
+battery charger.
+• Discontinue charging a battery that gives off extreme
+heat or a burning odor.
+• Use the battery only in CHC i80 equipment.
+• Use the battery only for its intended use and
+according to the instructions in the product
+documentation.
+12
+
+=== Page 14 ===
+2.3.1.2. Battery Safety
+WARNING - Do not damage the rechargeable
+lithium-ion batteries. A damaged battery can cause
+an explosion or fire and can result in personal
+injury and/or property damage.
+To prevent injury or damage:
+• Do not use or charge the battery if it appears to be
+damaged. Signs of damage include but are not
+limited to discoloration, warping and leakage of
+battery fluid.
+• Do not expose the battery to fire, high temperature
+or direct sunlight.
+• Do not immerse the battery in water.
+• Do not use or store the battery inside a vehicle
+during hot weather.
+• Do not drop or puncture the battery.
+• Do not open the battery or short-circuit its contacts.
+WARNING - Avoid contact with the rechargeable
+lithium-ion battery if it appears to be leaking.
+Battery fluid is corrosive and contact with it can result
+in personal injury and/or property damage.
+To prevent injury or damage:
+• If the battery leaks, avoid the battery fluid.
+• If battery fluid gets into your eyes, immediately rinse
+your eyes with clean water and seek medical
+attention. Please do not rub your eyes!
+• If battery fluid gets onto your skin or clothing,
+immediately use clean water to wash off the battery
+fluid.
+13
+
+=== Page 15 ===
+2.3.2. External Power Supply
+Two methods are available for providing external power to
+the receiver. Use the included GPS to USB PC Data Cable
+with Power Adapter and either the wall charging adapter or
+the optional 12 volt battery cable.
+In the office:
+The Power Adapter is connected with AC power of
+100 - 240 V and the output port of the Power Adapter
+connects to the Power Port of the GPS to USB PC Data
+Cable.
+In the field:
+The external power cable is connected with a vehicle
+battery, and the output port of the external power cable
+connects with the Power Port of the GPS to USB PC Data
+Cable.
+WARNING - Use caution when connecting external
+power cable’s clip leads to a vehicle battery. Do not
+allow any metal object to connect (short) the bat-
+tery’s positive (+) terminal to either the negative (-)
+terminal or the metal part of the vehicle battery. This
+could result in high current, arcing and high
+temperatures, exposing the user to possible injury.
+14
+
+=== Page 16 ===
+2.4. Inserting Battery and SIM Card
+Push down on the button on the battery cover to open the
+cover.
+Align the connectors of the batteries with the connections
+on the receiver and snap the batteries in place. Snap the
+battery cover back into place when finished.
+To remove the batteries, push down on the button on the
+battery cover and open the cover.
+Push down on
+button and lift
+Battery cover
+The SIM card can be inserted in the slot above the battery
+compartments. The notched end of the SIM card does NOT
+go into the slot.
+To remove the SIM card, lightly press down on the card, and
+pop the card out of the socket.
+Tip – The SIM card is provided by your GSM cellular
+network service provider.
+15
+
+=== Page 17 ===
+2.5. Product with Accessories
+Item Picture
+CHC i80 GNSS
+Receiver
+UHF Bar Antenna (450-470
+MHz)
+P/N: 2004 020 011
+USB Cable with Power
+Socket
+P/N: 2004 030 032/
+0403 000 097
+Serial Cable with Power
+Socket
+P/N: 2004 030 044/
+0403 000 040
+External Power Cable
+P/N: 2004 030 054
+Lithium Batteries
+P/N: 2004 050 017
+Battery Charger
+P/N: 2004 050 030 C300
+Auxiliary H.I. Tool
+Rover Hard Case
+P/N: 2004 060 005
+Optional Base Hard Case
+P/N: 2004 060 004
+Optional OTG Cable
+P/N: 0403 000 098
+16
+
+=== Page 18 ===
+2.6. Connecting to an Office Computer
+The receiver can be connected to an office computer for
+serial data transfer or settings via a GPS to PC Data Cable.
+Before you connect to the office computer, ensure that the
+receiver is powered on by the internal battery or external
+power.
+The following figure shows how to connect to the computer
+for data transfer:
+GPS to PC data cable
+2.7. Connecting to Carlson SurvCE as a Network Rover
+1. Turn on the controller → run SurvCE → tap the Equip
+tab in the main menu.
+2. In the Equip screen, select the GPS Rover button.
+For the Manufacture field, select CHC and i80 for the
+Model field.
+17
+
+=== Page 19 ===
+3. Tap the Comms Tab next to the Current tab. Then
+select Bluetooth for the Communication Type and
+Windows Mobile for the BT Type. Press the hammer and
+wrench button to search for Bluetooth devices.
+4. Press the Find Device button to search for devices.
+Pick your receiver from the list of devices found, the format
+is GNSS-???????.
+18
+
+=== Page 20 ===
+5. After selecting your receiver, press the Set Device
+PIN button and enter 1234 for the device pin. Press the
+green check mark and then the Bluetooth button to the left
+of the red X. Before moving to the Receiver tab, press the
+button to connect to the receiver, and wait for a
+successful connection.
+19
+
+=== Page 21 ===
+6. The Receiver tab should show CHCi80 in the
+antenna selection window, the abs. value should be 77.8mm
+and the Vertical radio button should be selected. The
+elevation mask should be at least 10, if not higher,
+depending on site conditions. Check the IMU (Inertial
+Measurement Unit) check box if you intend to use
+automatic level checking (additional configuration and
+settings required).
+7. To configure the i80 as a network rover, select Data
+Collector Internet for the Device field and NTRIP for the
+Network field. Press the hammer and wrench icon to add
+NTRIP broadcasters to the list of selectable broadcasters.
+8. On the NTRIP Broadcasters screen, enter an arbitrary
+name to identify the broadcaster account in the Name field
+(eGPS Solutions, for example). Next enter the IP address for
+the broadcaster in the IP field (for example, 107.7.166.152).
+Next enter the Port number in the Port field (for example,
+8080). Next, enter your broadcaster account username and
+password. You should be connected to the internet
+BEFORE starting SurvCE so the collector can connect to the
+broadcaster and download the base station mount points
+when you press the green check mark to save the new
+broadcaster account.
+20
+
+=== Page 22 ===
+9. After selecting the base, or virtual base (eGPSVRS)
+in this case, the information about the base will be filled in,
+and you can press the green check mark to return to the
+RTK tab. Pressing the green check mark from the RTK tab
+will activate the connection, and you should be on your way
+to a FIXED position!
+21
+
+=== Page 23 ===
+A. Communication Ports Definition
+A.I. CHC i80 Receiver I/O Port (7-Pin Lemo Port)
+Definition
+Pin Function
+1 Ground ( - )
+2 Ground ( - )
+3 RS232-TX (Output)
+4 Not Used
+5 Not Used
+6 VIN
+7 RS232-RX (Input)
+A.II. CHC i80 Receiver USB Port (7-Pin Lemo Port)
+Definition
+Pin Function
+1 Ground ( - )
+2 Ground ( - )
+3 VBUS
+4 DM
+5 DP
+6 VIN
+7 ID
+22
+
+=== Page 24 ===
+B. i80 Specifications
+GNSS Specifications
+220 channels with simultaneously tracked satellite signals
+GPS L1 C/A, L2E, L2C, L5
+GLONASS L1 C/A, L1 P, L2 C/A,
+L2 P, L3
+BeiDou B1, B2
+Galileo E1, E5A, E5B
+SBAS L1 C/A, L5 (QZSS, WAAS,
+EGNOS, GAGAN)
+Performance Specifications1
+Network RTK
+Horizontal 8 mm + 0.5 ppm RMS
+Vertical 15 mm + 0.5 ppm RMS
+Initialization Time < 10 s
+Initialization Reliability > 99.9%
+Real-Time Kinematics (RTK)
+Horizontal 8 mm + 1 ppm RMS
+Vertical 15 mm + 1 ppm RMS
+Initialization Time < 5 s
+Initialization Reliability > 99.9%
+Post-Processed Kinematics (PPK)
+Horizontal 8 mm + 1 ppm RMS
+Vertical 15 mm + 1 ppm RMS
+High-Precision Static
+Horizontal 2.5 mm + 0.1 ppm RMS
+Vertical 3.5 mm + 0.4 ppm RMS
+Baseline Length ≤ 300 km
+SBAS 0.5 m RMS
+1 Accuracy and reliability specifications may be affected by multipath, satellite
+geometry and atmospheric conditions. Performances assume minimum of 5
+satellites, follow up of recommended general GPS practices.
+23
+
+=== Page 25 ===
+Communication
+Serial 2 x 7-pin LEMO port (external power, USB
+data download, USB update, RS-232)
+Network Modem
+Internally integrated 3.75G modem (usable with 4G)
+HSPA+ 21 Mbps (download), 5.76 Mbps (upload)
+WCDMA 850/900/1700/1900/2100
+EDGE/GPRS/GSM 850/900/1800/1900
+Bluetooth Internally integrated multimode
+system compatible with Android, Windows
+Mobile and Windows desktop operating
+system
+WiFi 802.11 b/g/n, access point mode
+UHF Radios1
+Protected TNC Female
+Standard Internal Rx/Tx: 410 MHz to 470 MHz
+Transmit power: 0.5 W to 2 W
+Protocol: CHC, Trimble, Pacific Crest
+Range: 5 km optimal conditions
+FCC Certified Internal Rx/Tx: 403 MHz to 473 MHz
+Transmit power: 0.1 W to 1 W
+Protocol: Trimble, Satel, Pacific Crest
+Range: 5 km optimal conditions
+Protocols
+CMR, CMR+, SCMRX input and output
+RTCM 2.1, 2.3, 3.0, 3.1, 3.2 input and output
+NMEA 0183 output
+HCN, HRC and RINEX static formats
+NTRIP Client, NTRIP Caster
+Data Storage
+32GB high-speed memory
+Positioning rates: Up to 20 Hz
+1 UHF is an option; UHF type approvals are country specific.
+24
+
+=== Page 26 ===
+Environment
+Operating Temperature -40 °C to +75 °C (-40 °F to
+167 °F)
+Storage Temperature -55 °C to +85 °C (-67 °F to
+185 °F)
+Humidity 100% condensation
+Waterproof & Dustproof IP68 - protected from
+temporary immersion to
+depth of 1.5 meters
+Drop 2 m protection
+Electrical Specifications
+Power Consumption 3.2 W (depending on user
+settings)
+Li-ion Battery Capacity 2 x 3400 mAh/7.4 V
+Operating Time1
+RTK UHF Base Up to 6 h
+RTK Rover Up to 10 h
+Static Up to 12 h
+External Power 12 ~ 36 VDC
+Physical Specifications
+Size (H x W) 5.5 in x 4.9 in
+Weight 1.22 kg with batteries
+LCD 128 x 64 dpi sunlight
+readable with function/
+accept buttons
+Tilt Sensor EBubble leveling, tilt
+compensator2
+1 Operating time varies based on temperature.
+2 Accuracy of tilt compensator varies with operating environment and
+electromagnetic pollution.
+Specifications are subject to change without notice.
+25
+
+=== Page 27 ===
+C. Contact Information
+eGPS Solutions, Inc.
+4317 Park Drive
+Suite 104
+Norcross, GA 30093
+Telephone: (770) 695-3361
+Web: www.egps.net
+Email: info@egps.net
+26
+
+=== Page 28 ===
+
+
