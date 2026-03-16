@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'nmea_parser.dart';
 import 'coordinate_service.dart';
+import 'chcnav_init_data.dart';
 
 enum GnssConnectionState {
   disconnected,
@@ -51,6 +53,7 @@ class GnssPosition {
 
 /// 블루투스 GNSS 통합 서비스
 /// BT 연결 → NMEA 수신 → 파싱 → 좌표 변환 → 실시간 위치 노출
+/// CHCNav i70 전용 바이너리 프로토콜 지원
 class BluetoothGnssService extends ChangeNotifier {
   BluetoothConnection? _connection;
   GnssConnectionState _connectionState = GnssConnectionState.disconnected;
@@ -71,6 +74,12 @@ class BluetoothGnssService extends ChangeNotifier {
   String? _lastGga;
   int _ggaCount = 0;
 
+  // CHCNav 바이너리 프로토콜 시퀀스 번호
+  int _chcSeq = 0;
+
+  // RTCM 전송 모드: true=RAW, false=CHCNav 래퍼
+  bool useRawRtcm = false;
+
   GnssConnectionState get connectionState => _connectionState;
   String? get deviceName => _deviceName;
   GnssPosition? get position => _position;
@@ -90,9 +99,11 @@ class BluetoothGnssService extends ChangeNotifier {
   }
 
   /// 블루투스 기기에 연결
-  Future<void> connect(BluetoothDevice device) async {
+  /// [skipInit] true이면 초기화 명령 없이 연결만 (테라에스 설정 유지 테스트용)
+  Future<void> connect(BluetoothDevice device, {bool skipInit = false}) async {
     _connectionState = GnssConnectionState.connecting;
     _deviceName = device.name ?? device.address;
+    _chcSeq = 0;
     notifyListeners();
 
     try {
@@ -100,14 +111,24 @@ class BluetoothGnssService extends ChangeNotifier {
       _connectionState = GnssConnectionState.connected;
       notifyListeners();
 
-      debugPrint('[GNSS] 연결됨: $_deviceName');
-      fileLogger?.call('[BT] 연결됨: $_deviceName (${device.address})');
+      debugPrint('[GNSS] 연결됨: $_deviceName (skipInit=$skipInit)');
+      fileLogger?.call('[BT] 연결됨: $_deviceName (${device.address}) skipInit=$skipInit');
 
-      // i80 초기화: RTCM 입력 포트를 BT로 설정
-      await _sendInitCommands();
+      // 초기화 명령 전송 (skipInit=false일 때만)
+      if (!skipInit) {
+        await _sendInitCommands();
+      } else {
+        fileLogger?.call('[BT] === 초기화 생략 (테라에스 설정 유지) ===');
+      }
 
       _connection!.input!.listen(
         (Uint8List data) {
+          // i70에서 데이터 수신 → 초기화 명령 응답 대기 해제
+          _onBinaryResponse();
+          // 디버그 모드일 때 바이너리 메시지 감지
+          if (_isDebugQuerying) {
+            _detectBinaryResponses(data);
+          }
           _buffer += utf8.decode(data, allowMalformed: true);
           _processBuffer();
         },
@@ -133,7 +154,7 @@ class BluetoothGnssService extends ChangeNotifier {
     }
   }
 
-  /// NMEA 버퍼 처리 — 매 BT 패킷마다 즉시 파싱 + notify
+  /// NMEA 버퍼 처리
   void _processBuffer() {
     bool changed = false;
     while (_buffer.contains('\n')) {
@@ -142,26 +163,44 @@ class BluetoothGnssService extends ChangeNotifier {
       _buffer = _buffer.substring(idx + 1);
 
       if (!sentence.startsWith('\$')) {
-        // $ 로 시작하지 않는 응답도 로그 (CONFIG OK, ERROR 등)
         if (sentence.isNotEmpty) {
-          debugPrint('[GNSS] 응답: $sentence');
-          fileLogger?.call('[BT] 응답: $sentence');
+          final clean = _cleanResponse(sentence);
+          if (clean.isNotEmpty) {
+            debugPrint('[GNSS] 응답: $clean');
+            fileLogger?.call('[BT] 응답: $clean');
+            if (_isDebugQuerying) debugResponses.add('<< $clean');
+          }
         }
         continue;
       }
 
-      // $PCHC 응답 로그 (OK, ERROR 등)
+      // $$ = CHCNav 바이너리 → 텍스트 처리 스킵
+      if (sentence.startsWith('\$\$')) continue;
+
+      // $PCHC 응답
       if (sentence.contains('PCHC')) {
         debugPrint('[GNSS] PCHC응답: $sentence');
         fileLogger?.call('[BT] PCHC응답: $sentence');
+        if (_isDebugQuerying) debugResponses.add('<< $sentence');
       }
 
-      // GGA 캡처 (NTRIP VRS용 + 디버그)
+      // 디버그 모드: NMEA 외 텍스트 응답 캡처
+      if (_isDebugQuerying &&
+          !sentence.contains('GGA') && !sentence.contains('GSA') &&
+          !sentence.contains('RMC') && !sentence.contains('GSV') &&
+          !sentence.contains('PCHC')) {
+        final clean = _cleanResponse(sentence);
+        if (clean.length > 2) {
+          debugResponses.add('<< $clean');
+          fileLogger?.call('[BT] 응답: $clean');
+        }
+      }
+
+      // GGA 캡처 (NTRIP VRS용)
       if (sentence.contains('GGA')) {
         _lastGga = sentence;
         _ggaCount++;
         debugPrint('[NMEA] $sentence');
-        // GGA에서 Fix/위성/diffAge 추출하여 파일 로그 (5초마다)
         if (_ggaCount <= 5 || _ggaCount % 5 == 0) {
           final parts = sentence.split(',');
           final fix = parts.length > 6 ? parts[6] : '?';
@@ -174,22 +213,18 @@ class BluetoothGnssService extends ChangeNotifier {
       }
 
       final nmeaPos = _parser.parse(sentence);
-      // GSA 등은 null 반환하지만 PDOP를 업데이트할 수 있음
       if (_parser.pdop != null) _pdop = _parser.pdop;
       if (nmeaPos == null) continue;
 
-      // 위성수/Fix상태는 항상 업데이트 (fixQuality=0이어도)
       final prevFix = _fixQuality;
       _satellites = nmeaPos.satellites;
       _fixQuality = nmeaPos.fixQuality;
       changed = true;
 
-      // Fix 변화 시 파일 로그
       if (prevFix != _fixQuality) {
         fileLogger?.call('[BT] Fix변화: $prevFix→$_fixQuality 위성:$_satellites HDOP:${nmeaPos.hdop} diffAge:${nmeaPos.diffAge}');
       }
 
-      // 좌표가 파싱되면 업데이트 (fixQuality=0이어도 좌표 자체는 유효할 수 있음)
       if (nmeaPos.latitude != 0.0 && nmeaPos.longitude != 0.0) {
         final tm = CoordinateService.wgs84ToTm(
           nmeaPos.latitude,
@@ -213,48 +248,190 @@ class BluetoothGnssService extends ChangeNotifier {
     if (changed) notifyListeners();
   }
 
-  /// NMEA 체크섬 계산 ($ 와 * 사이 XOR)
-  String _nmeaChecksum(String sentence) {
-    // '$' 제거, '*' 이전까지
-    final body = sentence.startsWith('\$') ? sentence.substring(1) : sentence;
-    int cs = 0;
-    for (int i = 0; i < body.length; i++) {
-      cs ^= body.codeUnitAt(i);
-    }
-    return cs.toRadixString(16).toUpperCase().padLeft(2, '0');
+  /// 응답에서 비ASCII/깨진 문자 제거
+  String _cleanResponse(String raw) {
+    final cleaned = raw.replaceAll(RegExp(r'[^\x20-\x7E가-힣ㄱ-ㅎㅏ-ㅣ]'), '').trim();
+    return cleaned;
   }
 
-  /// BT 연결 직후 초기화
+  /// 바이너리 메시지 감지 (디버그용)
+  void _detectBinaryResponses(Uint8List data) {
+    for (int i = 0; i < data.length - 3; i++) {
+      if (data[i] == 0x24 && data[i + 1] == 0x24) {
+        if (i + 6 < data.length) {
+          final msgLen = data[i + 2] | (data[i + 3] << 8);
+          final msgId = data[i + 4] | (data[i + 5] << 8);
+          final hex = data.skip(i).take(min(20, data.length - i))
+              .map((b) => b.toRadixString(16).padLeft(2, '0'))
+              .join(' ');
+          debugResponses.add('<BIN> msgId:$msgId len:$msgLen hex:[$hex...]');
+          fileLogger?.call('[BT] BIN msgId:$msgId len:$msgLen');
+        }
+        break;
+      }
+    }
+  }
+
+  // ── CHCNav 바이너리 프로토콜 ──
+
+  /// CHCNav 바이너리 명령 프레임 생성
+  /// 형식: $$ 01 [seq] [len] 04 11 [00x8] 01 [payloadLen:2] [payload] 09 24 0D 0A
+  Uint8List _buildChcCommand(List<int> payload) {
+    final totalSize = 18 + payload.length + 4; // header(18) + payload + terminator(4)
+    final payloadLen = payload.length;
+    final seq = _chcSeq++ & 0xFF;
+
+    final frame = <int>[
+      0x24, 0x24,           // magic $$
+      0x01,                 // direction: request (tablet → i70)
+      seq,                  // sequence number
+      (totalSize - 7) & 0xFF, // length field
+      0x04, 0x11,           // protocol ID
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 8 zero bytes
+      0x01,                 // constant
+      (payloadLen >> 8) & 0xFF, payloadLen & 0xFF, // payload length (BE)
+      ...payload,
+      0x09, 0x24, 0x0D, 0x0A, // terminator
+    ];
+
+    return Uint8List.fromList(frame);
+  }
+
+  /// CHCNav 설정 명령 생성 (파라미터 ID + 값 설정)
+  Uint8List _buildChcSetCommand(int paramHi, int paramLo, int valueHi, int valueLo) {
+    final payload = [
+      0x00, 0x01, 0x00, 0x02, // constants
+      0x00, 0x0A,             // sub-command: set parameter
+      paramHi, paramLo,       // parameter ID
+      0x00, 0x02,             // value length
+      valueHi, valueLo,       // value
+      0x00, 0x00,             // padding
+    ];
+    return _buildChcCommand(payload);
+  }
+
+  /// CHCNav 바이너리 프레임 직접 전송
+  Future<void> _sendChcBinary(Uint8List frame, String desc) async {
+    if (_connection == null) return;
+    try {
+      _connection!.output.add(frame);
+      final hex = frame.take(min(24, frame.length))
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join(' ');
+      debugPrint('[GNSS] CHC: $desc [$hex...]');
+      fileLogger?.call('[BT] CHC: $desc (${frame.length}B)');
+      await Future.delayed(const Duration(milliseconds: 300));
+    } catch (e) {
+      fileLogger?.call('[BT] CHC 실패: $desc → $e');
+    }
+  }
+
+  /// CHCNav RTCM 래퍼: RTCM3 데이터를 CHCNav 바이너리 프레임으로 감싸기
+  /// 테라에스 캡처 기반 정확한 프레임 형식:
+  ///   [0-1]  24 24          magic $$
+  ///   [2]    01             direction (request)
+  ///   [3]    seq            sequence number
+  ///   [4]    FA             RTCM 프레임 마커 (고정값)
+  ///   [5-6]  04 11          protocol ID
+  ///   [7-14] 00 x8          zeros
+  ///   [15]   01             constant
+  ///   [16-17] payloadLen    (BE) = rtcmLen + 14
+  ///   [18-21] 00 01 00 02   constants
+  ///   [22-25] 00 32 15 04   sub-command: RTCM relay
+  ///   [26-27] dataRegionLen (BE) = rtcmLen + 4
+  ///   [28-29] 00 00         padding
+  ///   [30-31] rtcmLen       (BE) = RTCM 데이터 길이
+  ///   [32+]  RTCM data      raw RTCM3 data (D3...)
+  ///   [last4] 09 24 0D 0A   terminator
+  Uint8List _wrapRtcmInChcFrame(Uint8List rtcmData) {
+    final rtcmLen = rtcmData.length;
+    final dataRegionLen = rtcmLen + 4;   // rtcmLen(2) + 00 00(2)
+    final payloadLen = rtcmLen + 14;     // sub-cmd header(10) + dataRegionLen(2) + 00 00(2) + rtcmLen(2) = 14
+    final seq = _chcSeq++ & 0xFF;
+
+    final frame = <int>[
+      0x24, 0x24,           // [0-1] magic $$
+      0x01,                 // [2] direction: request
+      seq,                  // [3] sequence number
+      0xFA,                 // [4] RTCM 프레임 마커 (테라에스 동일)
+      0x04, 0x11,           // [5-6] protocol ID
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [7-14] zeros
+      0x01,                 // [15] constant
+      (payloadLen >> 8) & 0xFF, payloadLen & 0xFF, // [16-17] payload length (BE)
+      0x00, 0x01, 0x00, 0x02, // [18-21] constants
+      0x00, 0x32, 0x15, 0x04, // [22-25] sub-command: RTCM relay
+      (dataRegionLen >> 8) & 0xFF, dataRegionLen & 0xFF, // [26-27] data region length (BE)
+      0x00, 0x00,             // [28-29] padding
+      (rtcmLen >> 8) & 0xFF, rtcmLen & 0xFF, // [30-31] RTCM length (BE)
+      ...rtcmData,            // [32+] raw RTCM3 data
+      0x09, 0x24, 0x0D, 0x0A, // terminator
+    ];
+
+    return Uint8List.fromList(frame);
+  }
+
+  // 응답 대기용 Completer
+  Completer<void>? _responseCompleter;
+
+  /// i70로부터 바이너리 응답 수신 시 호출 (응답 대기 해제)
+  void _onBinaryResponse() {
+    if (_responseCompleter != null && !_responseCompleter!.isCompleted) {
+      _responseCompleter!.complete();
+    }
+  }
+
+  /// 바이너리 명령 전송 후 응답 대기 (타임아웃 포함)
+  Future<void> _sendAndWaitResponse(Uint8List cmd, int index, {int timeoutMs = 500}) async {
+    if (_connection == null) return;
+
+    _responseCompleter = Completer<void>();
+
+    try {
+      _connection!.output.add(cmd);
+      // 응답 대기 (타임아웃)
+      await _responseCompleter!.future.timeout(
+        Duration(milliseconds: timeoutMs),
+        onTimeout: () {
+          // 타임아웃 — 무시하고 진행
+        },
+      );
+    } catch (e) {
+      fileLogger?.call('[BT] 초기화 #$index 전송 실패: $e');
+    }
+    _responseCompleter = null;
+  }
+
+  /// BT 연결 직후 초기화 — 테라에스 캡처 시퀀스 재생 (응답 대기 포함)
   Future<void> _sendInitCommands() async {
     if (_connection == null) return;
 
-    fileLogger?.call('[BT] === i70 초기화 시작 ===');
+    fileLogger?.call('[BT] === i70 테라에스 초기화 시작 (${chcnavInitCommands.length}개, 응답대기) ===');
 
-    // 1) 먼저 불필요한 출력 모두 중단 (Unicore)
-    await _sendRawCommand('UNLOGALL');
-    // 2) GGA만 1초 간격 출력
+    for (int i = 0; i < chcnavInitCommands.length; i++) {
+      if (_connection == null || _connectionState != GnssConnectionState.connected) break;
+      final cmd = Uint8List.fromList(chcnavInitCommands[i]);
+      final seq = cmd.length > 3 ? cmd[3] : i;
+
+      await _sendAndWaitResponse(cmd, i + 1);
+
+      if (i < 5 || i % 10 == 0 || i >= chcnavInitCommands.length - 3) {
+        fileLogger?.call('[BT] 초기화 #${i + 1}/${chcnavInitCommands.length} seq=0x${seq.toRadixString(16)} (${cmd.length}B) 완료');
+      }
+    }
+
+    // GGA NMEA 출력 요청
     await _sendRawCommand('LOG GPGGA ONTIME 1');
     await _sendRawCommand('LOG GPGSA ONTIME 5');
-    // 3) 로버 모드 + RTCM 입력 설정
-    await _sendRawCommand('MODE ROVER');
-    await _sendRawCommand('CONFIG RTK ON');
-    // 4) $PCHC 명령
-    await _sendPchcCommand('PCHC,MODE,ROVER');
-    await _sendPchcCommand('PCHC,SET,PORT,BT,RTCM3,115200');
-    await _sendPchcCommand('PCHC,SET,CORRPORT,BT');
-    await _sendPchcCommand('PCHC,SET,NMEAPORT,BT,GGA,1');
-    // 5) 설정 저장
-    await _sendRawCommand('SAVECONFIG');
 
     try {
       await _connection!.output.allSent;
-      fileLogger?.call('[BT] === i70 초기화 완료 ===');
+      fileLogger?.call('[BT] === i70 초기화 완료 (RTCM: ${useRawRtcm ? "RAW" : "래퍼"}) ===');
     } catch (e) {
       fileLogger?.call('[BT] 초기화 flush 실패: $e');
     }
   }
 
-  /// i70 수신기 내부 NTRIP 클라이언트 설정 (i70에 자체 인터넷이 있는 경우)
+  /// i70 수신기 내부 NTRIP 클라이언트 설정
   Future<void> configureReceiverNtrip({
     required String host,
     required int port,
@@ -270,24 +447,12 @@ class BluetoothGnssService extends ChangeNotifier {
     fileLogger?.call('[BT] === i70 내부 NTRIP 설정 ===');
     fileLogger?.call('[BT] 서버: $host:$port/$mountPoint');
 
-    // 기존 세션 정리
     await _sendPchcCommand('PCHC,NTRIP,STOP');
-    await _sendRawCommand('CONFIG NTRIP STOP');
-
-    // $PCHC 형식
     await _sendPchcCommand('PCHC,NTRIP,SERVER,$host,$port');
     await _sendPchcCommand('PCHC,NTRIP,MOUNT,$mountPoint');
     await _sendPchcCommand('PCHC,NTRIP,USER,$username');
     await _sendPchcCommand('PCHC,NTRIP,PASS,$password');
     await _sendPchcCommand('PCHC,NTRIP,START');
-
-    // Unicore CONFIG 형식
-    await _sendRawCommand('CONFIG NTRIP SERVER $host');
-    await _sendRawCommand('CONFIG NTRIP PORT $port');
-    await _sendRawCommand('CONFIG NTRIP MOUNTPOINT $mountPoint');
-    await _sendRawCommand('CONFIG NTRIP USER $username');
-    await _sendRawCommand('CONFIG NTRIP PASSWORD $password');
-    await _sendRawCommand('CONFIG NTRIP START');
 
     try {
       await _connection!.output.allSent;
@@ -295,6 +460,16 @@ class BluetoothGnssService extends ChangeNotifier {
     } catch (e) {
       fileLogger?.call('[BT] NTRIP 설정 flush 실패: $e');
     }
+  }
+
+  /// NMEA 체크섬 계산
+  String _nmeaChecksum(String sentence) {
+    final body = sentence.startsWith('\$') ? sentence.substring(1) : sentence;
+    int cs = 0;
+    for (int i = 0; i < body.length; i++) {
+      cs ^= body.codeUnitAt(i);
+    }
+    return cs.toRadixString(16).toUpperCase().padLeft(2, '0');
   }
 
   /// $PCHC 명령 전송 (체크섬 자동 계산)
@@ -313,7 +488,7 @@ class BluetoothGnssService extends ChangeNotifier {
     }
   }
 
-  /// 원시 명령 전송 (CR+LF 종단)
+  /// 원시 텍스트 명령 전송 (CR+LF 종단)
   Future<void> _sendRawCommand(String cmd) async {
     if (_connection == null) return;
     try {
@@ -327,22 +502,22 @@ class BluetoothGnssService extends ChangeNotifier {
     }
   }
 
+  // ── RTCM 전송 (CHCNav 바이너리 래퍼) ──
+
   int _rtcmBytesSent = 0;
   int _rtcmSendCount = 0;
   int _rtcmFlushErrors = 0;
   int _rtcmFlushOk = 0;
 
-  // RTCM 버퍼링 (작은 패킷을 모아서 한번에 전송)
   final List<int> _rtcmBuffer = [];
   Timer? _rtcmFlushTimer;
-  static const int _rtcmBufferThreshold = 256; // 256B 이상 모이면 전송 (BT 모듈 호환성)
+  static const int _rtcmBufferThreshold = 256;
 
-  /// RTCM 전송 통계
   int get rtcmBytesSent => _rtcmBytesSent;
   int get rtcmSendCount => _rtcmSendCount;
   int get rtcmFlushErrors => _rtcmFlushErrors;
 
-  /// RTCM 보정 데이터를 버퍼에 추가 (NTRIP → 버퍼 → BT → i80)
+  /// RTCM 보정 데이터를 버퍼에 추가 (NTRIP → 버퍼 → CHCNav 래퍼 → BT → i70)
   void sendRtcm(Uint8List data) {
     if (_connection == null || _connectionState != GnssConnectionState.connected) {
       debugPrint('[GNSS] RTCM 전송 불가 - BT 미연결 (${_connectionState.name})');
@@ -352,36 +527,34 @@ class BluetoothGnssService extends ChangeNotifier {
 
     _rtcmBuffer.addAll(data);
 
-    // 버퍼가 threshold 이상이면 즉시 전송
     if (_rtcmBuffer.length >= _rtcmBufferThreshold) {
       _flushRtcmBuffer();
     } else {
-      // 아직 작으면 100ms 타이머로 지연 전송 (데이터가 더 올 수 있으므로)
       _rtcmFlushTimer?.cancel();
       _rtcmFlushTimer = Timer(const Duration(milliseconds: 100), _flushRtcmBuffer);
     }
   }
 
-  /// 버퍼에 모인 RTCM을 한번에 BT 전송
+  /// 버퍼에 모인 RTCM을 CHCNav 바이너리 프레임으로 감싸서 BT 전송
   void _flushRtcmBuffer() {
     _rtcmFlushTimer?.cancel();
     if (_rtcmBuffer.isEmpty) return;
     if (_connection == null || _connectionState != GnssConnectionState.connected) return;
 
-    final sendData = Uint8List.fromList(_rtcmBuffer);
+    final rawRtcm = Uint8List.fromList(_rtcmBuffer);
     _rtcmBuffer.clear();
 
     try {
-      // RTCM3 프레임 검증 및 상세 로그
+      // RTCM3 프레임 검증 (로그용)
       final msgTypes = <int>[];
       int offset = 0;
       bool validFrame = false;
-      while (offset < sendData.length - 4) {
-        if (sendData[offset] == 0xD3) {
+      while (offset < rawRtcm.length - 4) {
+        if (rawRtcm[offset] == 0xD3) {
           validFrame = true;
-          final len = ((sendData[offset + 1] & 0x03) << 8) | sendData[offset + 2];
-          if (offset + 3 + len + 3 <= sendData.length) {
-            final msgType = ((sendData[offset + 3] & 0xFF) << 4) | ((sendData[offset + 4] & 0xF0) >> 4);
+          final len = ((rawRtcm[offset + 1] & 0x03) << 8) | rawRtcm[offset + 2];
+          if (offset + 3 + len + 3 <= rawRtcm.length) {
+            final msgType = ((rawRtcm[offset + 3] & 0xFF) << 4) | ((rawRtcm[offset + 4] & 0xF0) >> 4);
             msgTypes.add(msgType);
             offset += 3 + len + 3;
             continue;
@@ -390,32 +563,98 @@ class BluetoothGnssService extends ChangeNotifier {
         offset++;
       }
 
+      // RAW 또는 CHCNav 래퍼 모드로 전송
+      final Uint8List sendData;
+      if (useRawRtcm) {
+        sendData = rawRtcm;
+      } else {
+        sendData = _wrapRtcmInChcFrame(rawRtcm);
+      }
       _connection!.output.add(sendData);
+
       _connection!.output.allSent.then((_) {
         _rtcmFlushOk++;
       }).catchError((e) {
         _rtcmFlushErrors++;
-        fileLogger?.call('[BT] ⚠️ RTCM flush 실패 (#$_rtcmFlushErrors): $e');
+        fileLogger?.call('[BT] RTCM flush 실패 (#$_rtcmFlushErrors): $e');
       });
-      _rtcmBytesSent += sendData.length;
+      _rtcmBytesSent += rawRtcm.length;
       _rtcmSendCount++;
 
-      // 로그 (처음 10개 + 이후 10개마다)
+      // 로그
       if (_rtcmSendCount <= 10 || _rtcmSendCount % 10 == 0) {
-        final hex = sendData.take(12).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-        final errInfo = _rtcmFlushErrors > 0 ? ' flush오류:$_rtcmFlushErrors' : '';
-        final flushInfo = ' flush성공:$_rtcmFlushOk';
-        final frameInfo = validFrame ? 'RTCM3✓' : '⚠️비RTCM';
+        final hex = sendData.take(16).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+        final errInfo = _rtcmFlushErrors > 0 ? ' err:$_rtcmFlushErrors' : '';
+        final frameInfo = validFrame ? 'RTCM3' : 'raw';
         final typeInfo = msgTypes.isNotEmpty ? ' [${msgTypes.join(",")}]' : '';
-        final msg = '[BT] #$_rtcmSendCount $frameInfo ${sendData.length}B(버퍼)$typeInfo '
-            'hex:[$hex] 누적:${(_rtcmBytesSent / 1024).toStringAsFixed(1)}KB$flushInfo$errInfo';
+        final msg = '[BT] #$_rtcmSendCount CHC-wrapped $frameInfo ${rawRtcm.length}B->${sendData.length}B$typeInfo '
+            'hex:[$hex] 누적:${(_rtcmBytesSent / 1024).toStringAsFixed(1)}KB$errInfo';
         debugPrint('[GNSS] $msg');
         fileLogger?.call(msg);
       }
     } catch (e) {
       debugPrint('[GNSS] RTCM 전송 실패: $e');
-      fileLogger?.call('[BT] ❌ RTCM 전송 예외: $e');
+      fileLogger?.call('[BT] RTCM 전송 예외: $e');
     }
+  }
+
+  // ── 디버그 도구 ──
+
+  final List<String> debugResponses = [];
+  bool _isDebugQuerying = false;
+
+  Future<void> sendDebugCommand(String cmd) async {
+    if (_connection == null || _connectionState != GnssConnectionState.connected) return;
+
+    _isDebugQuerying = true;
+
+    if (cmd.startsWith('PCHC')) {
+      final cs = _nmeaChecksum(cmd);
+      final sentence = '\$$cmd*$cs\r\n';
+      final data = Uint8List.fromList(utf8.encode(sentence));
+      _connection!.output.add(data);
+      debugResponses.add('>> \$$cmd*$cs');
+      fileLogger?.call('[DBG] CMD: \$$cmd*$cs');
+    } else {
+      final data = Uint8List.fromList(utf8.encode('$cmd\r\n'));
+      _connection!.output.add(data);
+      debugResponses.add('>> $cmd');
+      fileLogger?.call('[DBG] CMD: $cmd');
+    }
+
+    await Future.delayed(const Duration(milliseconds: 1500));
+    try { await _connection!.output.allSent; } catch (_) {}
+    _isDebugQuerying = false;
+    notifyListeners();
+  }
+
+  Future<void> queryReceiverSettings() async {
+    debugResponses.clear();
+    debugResponses.add('=== i70 설정 조회 시작 ===');
+    notifyListeners();
+
+    final commands = [
+      'LOG VERSION ONCE',
+      'PCHC,GET,MODE',
+      'PCHC,GET,CORRPORT',
+      'PCHC,GET,DIFFPORT',
+      'PCHC,GET,PORT,BT',
+      'PCHC,GET,NMEAPORT',
+      'PCHC,GET,RTCMPORT',
+      'PCHC,GET,NTRIP',
+      'PCHC,GET,DIFF',
+      'PCHC,GET,RTCM',
+      'LOG COMCONFIG ONCE',
+      'LOG RTCMCONFIG ONCE',
+      'LOG RTKCONFIG ONCE',
+    ];
+
+    for (final cmd in commands) {
+      await sendDebugCommand(cmd);
+    }
+
+    debugResponses.add('=== 조회 완료 (${debugResponses.length}줄) ===');
+    notifyListeners();
   }
 
   /// 연결 해제
@@ -440,7 +679,6 @@ class BluetoothGnssService extends ChangeNotifier {
 
   @override
   void dispose() {
-    // 동기적으로 소켓 닫기 시도 (dispose는 await 불가)
     try { _connection?.close(); } catch (_) {}
     _connection = null;
     super.dispose();

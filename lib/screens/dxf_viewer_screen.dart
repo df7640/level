@@ -1,8 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:share_plus/share_plus.dart';
 import '../models/dimension_data.dart';
 import '../models/station_data.dart';
 import '../services/bluetooth_gnss_service.dart';
@@ -116,6 +121,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   bool _isSelectMode = false;
   final List<Map<String, dynamic>> _selectedEntities = [];
   bool _showPropertyPanel = false;
+  ({double x, double y})? _lastSelectDxfPoint; // 선택 시 터치 DXF 좌표 (기초라인 근접 측점 검색용)
 
   int _dxfRepaintVersion = 0; // DxfPainter 강제 repaint 트리거
 
@@ -504,14 +510,27 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   ),
                 ),
               ),
-              // GPS 연결
+              // GPS 연결 (CHCNav 래퍼)
               if (!isConnected && !isConnecting)
                 ListTile(
                   leading: const Icon(Icons.bluetooth_searching, color: Colors.blue),
-                  title: const Text('GPS 연결', style: TextStyle(color: Colors.white)),
-                  subtitle: const Text('블루투스 GNSS 수신기에 연결', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  title: const Text('GPS 연결 (래퍼)', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('테라에스 초기화 + RTCM 래퍼', style: TextStyle(color: Colors.white38, fontSize: 12)),
                   onTap: () {
                     Navigator.pop(ctx);
+                    _gnssService.useRawRtcm = false;
+                    _connectGps();
+                  },
+                ),
+              // GPS 연결 (RAW RTCM)
+              if (!isConnected && !isConnecting)
+                ListTile(
+                  leading: const Icon(Icons.bluetooth_searching, color: Colors.orange),
+                  title: const Text('GPS 연결 (RAW)', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('테라에스 초기화 + RAW RTCM', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _gnssService.useRawRtcm = true;
                     _connectGps();
                   },
                 ),
@@ -580,6 +599,29 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   _showNtripLogDialog();
                 },
               ),
+              const Divider(color: Colors.white24),
+              // 디버그 연결 (초기화 없이)
+              if (!isConnected && !isConnecting)
+                ListTile(
+                  leading: const Icon(Icons.developer_mode, color: Colors.amber),
+                  title: const Text('디버그 연결 (초기화 없이)', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('테라에스 설정 유지한 채 연결', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _connectGpsDebug();
+                  },
+                ),
+              // 수신기 명령 전송
+              if (isConnected)
+                ListTile(
+                  leading: const Icon(Icons.terminal, color: Colors.amber),
+                  title: const Text('수신기 명령 전송', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('i70 설정 조회/변경', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showReceiverCommandDialog();
+                  },
+                ),
               const SizedBox(height: 8),
             ],
           ),
@@ -918,7 +960,19 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                     _ntripService.debugLog.clear();
                     setDialogState(() {});
                   },
-                  child: const Text('로그 지우기', style: TextStyle(color: Colors.white38)),
+                  child: const Text('지우기', style: TextStyle(color: Colors.white38)),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final text = _buildDebugText(_gnssService.debugResponses);
+                    Clipboard.setData(ClipboardData(text: text));
+                    _showStatusMessage('클립보드에 복사됨', Colors.greenAccent);
+                  },
+                  child: const Text('복사', style: TextStyle(color: Colors.amber)),
+                ),
+                TextButton(
+                  onPressed: () => _shareDebugInfo(_gnssService.debugResponses),
+                  child: const Text('공유', style: TextStyle(color: Colors.cyanAccent)),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(ctx),
@@ -932,7 +986,327 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     );
   }
 
-  /// 페어링된 블루투스 기기 선택 다이얼로그
+  /// 디버그 연결 (초기화 명령 없이)
+  void _connectGpsDebug() async {
+    final btConnect = await Permission.bluetoothConnect.request();
+    final btScan = await Permission.bluetoothScan.request();
+    final location = await Permission.locationWhenInUse.request();
+
+    if (btConnect.isGranted && btScan.isGranted && location.isGranted) {
+      _showBluetoothDeviceDialog(skipInit: true);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('블루투스 및 위치 권한이 필요합니다.')),
+        );
+      }
+    }
+  }
+
+  /// 수신기 명령 전송 다이얼로그
+  void _showReceiverCommandDialog() {
+    final cmdCtrl = TextEditingController();
+    _gnssService.debugResponses.clear();
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            // 1초마다 응답 갱신
+            final timer = Stream.periodic(const Duration(seconds: 1));
+            timer.take(120).listen((_) {
+              if (ctx.mounted) setDialogState(() {});
+            });
+
+            final responses = _gnssService.debugResponses;
+            return AlertDialog(
+              backgroundColor: Colors.grey[900],
+              title: Row(
+                children: [
+                  const Icon(Icons.terminal, color: Colors.amber, size: 20),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text('i70 수신기 명령', style: TextStyle(color: Colors.white, fontSize: 14)),
+                  ),
+                  // 공유 버튼
+                  IconButton(
+                    icon: const Icon(Icons.share, color: Colors.cyanAccent, size: 20),
+                    onPressed: () => _shareDebugInfo(responses),
+                    tooltip: '결과 공유',
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: double.maxFinite,
+                height: 450,
+                child: Column(
+                  children: [
+                    // 프리셋 버튼
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 4,
+                      children: [
+                        _cmdPresetBtn('설정 전체 조회', () async {
+                          await _gnssService.queryReceiverSettings();
+                          if (ctx.mounted) setDialogState(() {});
+                        }),
+                        _cmdPresetBtn('VERSION', () async {
+                          await _gnssService.sendDebugCommand('LOG VERSION ONCE');
+                          if (ctx.mounted) setDialogState(() {});
+                        }),
+                        _cmdPresetBtn('COMCONFIG', () async {
+                          await _gnssService.sendDebugCommand('LOG COMCONFIG ONCE');
+                          if (ctx.mounted) setDialogState(() {});
+                        }),
+                        _cmdPresetBtn('응답 지우기', () {
+                          _gnssService.debugResponses.clear();
+                          setDialogState(() {});
+                        }),
+                        // Unicore INTERFACEMODE 테스트
+                        _cmdPresetBtn('BT RTCM3 설정', () async {
+                          await _gnssService.sendDebugCommand('INTERFACEMODE BT RTCMV3 NMEA OFF');
+                          if (ctx.mounted) setDialogState(() {});
+                        }),
+                        _cmdPresetBtn('BLUETOOTH RTCM3', () async {
+                          await _gnssService.sendDebugCommand('INTERFACEMODE BLUETOOTH RTCMV3 NMEA OFF');
+                          if (ctx.mounted) setDialogState(() {});
+                        }),
+                        _cmdPresetBtn('COM2 RTCM3', () async {
+                          await _gnssService.sendDebugCommand('INTERFACEMODE COM2 RTCMV3 NMEA OFF');
+                          if (ctx.mounted) setDialogState(() {});
+                        }),
+                        _cmdPresetBtn('COM3 RTCM3', () async {
+                          await _gnssService.sendDebugCommand('INTERFACEMODE COM3 RTCMV3 NMEA OFF');
+                          if (ctx.mounted) setDialogState(() {});
+                        }),
+                        _cmdPresetBtn('SAVECONFIG', () async {
+                          await _gnssService.sendDebugCommand('SAVECONFIG');
+                          if (ctx.mounted) setDialogState(() {});
+                        }),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // 직접 입력
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: cmdCtrl,
+                            style: const TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'monospace'),
+                            decoration: InputDecoration(
+                              hintText: '명령 입력 (예: PCHC,GET,PORT,BT)',
+                              hintStyle: const TextStyle(color: Colors.white24, fontSize: 11),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                              isDense: true,
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(4)),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(4),
+                                borderSide: BorderSide(color: Colors.grey[700]!),
+                              ),
+                            ),
+                            onSubmitted: (v) async {
+                              if (v.trim().isEmpty) return;
+                              await _gnssService.sendDebugCommand(v.trim());
+                              cmdCtrl.clear();
+                              if (ctx.mounted) setDialogState(() {});
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        SizedBox(
+                          height: 34,
+                          child: ElevatedButton(
+                            onPressed: () async {
+                              if (cmdCtrl.text.trim().isEmpty) return;
+                              await _gnssService.sendDebugCommand(cmdCtrl.text.trim());
+                              cmdCtrl.clear();
+                              if (ctx.mounted) setDialogState(() {});
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.amber[800],
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                            ),
+                            child: const Text('전송', style: TextStyle(fontSize: 12)),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // 응답 목록
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: Colors.black,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: responses.isEmpty
+                            ? const Center(child: Text('명령을 전송하면 응답이 여기에 표시됩니다',
+                                style: TextStyle(color: Colors.white24, fontSize: 11)))
+                            : ListView.builder(
+                                itemCount: responses.length,
+                                itemBuilder: (_, i) {
+                                  final line = responses[i];
+                                  final isSent = line.startsWith('>>>');
+                                  final isHeader = line.startsWith('===');
+                                  Color color = Colors.white70;
+                                  if (isSent) color = Colors.cyanAccent;
+                                  if (isHeader) color = Colors.amber;
+                                  if (line.contains('OK')) color = Colors.greenAccent;
+                                  if (line.contains('ERROR') || line.contains('error')) color = Colors.redAccent;
+                                  return Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 1),
+                                    child: Text(
+                                      line,
+                                      style: TextStyle(color: color, fontSize: 10, fontFamily: 'monospace'),
+                                    ),
+                                  );
+                                },
+                              ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    final text = _buildDebugText(responses);
+                    Clipboard.setData(ClipboardData(text: text));
+                    _showStatusMessage('클립보드에 복사됨', Colors.greenAccent);
+                  },
+                  child: const Text('복사', style: TextStyle(color: Colors.amber)),
+                ),
+                TextButton(
+                  onPressed: () => _shareDebugInfo(responses),
+                  child: const Text('공유', style: TextStyle(color: Colors.cyanAccent)),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('닫기', style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _cmdPresetBtn(String label, VoidCallback onTap) {
+    return SizedBox(
+      height: 28,
+      child: OutlinedButton(
+        onPressed: onTap,
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          side: BorderSide(color: Colors.grey[600]!),
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        child: Text(label, style: const TextStyle(color: Colors.amber, fontSize: 10)),
+      ),
+    );
+  }
+
+  /// 디버그 텍스트 생성 (공유/복사 공용)
+  String _buildDebugText(List<String> responses) {
+    final buf = StringBuffer();
+    buf.writeln('[i70 디버그 정보]');
+    buf.writeln('시각: ${DateTime.now().toString().substring(0, 19)}');
+    buf.writeln('기기: ${_gnssService.deviceName ?? "미연결"}');
+    buf.writeln('BT: ${_gnssService.connectionState.name}');
+
+    // Fix 상태 상세
+    final fixLabel = switch (_gnssService.fixQuality) {
+      1 => 'GPS',
+      2 => 'DGPS',
+      4 => 'RTK Fixed',
+      5 => 'RTK Float',
+      _ => 'N/A(${_gnssService.fixQuality})',
+    };
+    buf.writeln('Fix: $fixLabel  위성: ${_gnssService.satellites}  PDOP: ${_gnssService.pdop ?? "-"}');
+
+    // 마지막 GGA
+    final gga = _gnssService.lastGga;
+    if (gga != null) {
+      buf.writeln('GGA: $gga');
+    }
+
+    // 위치
+    final pos = _gnssService.position;
+    if (pos != null) {
+      buf.writeln('WGS84: ${pos.latitude.toStringAsFixed(8)}, ${pos.longitude.toStringAsFixed(8)}');
+      buf.writeln('TM: ${pos.tmX.toStringAsFixed(3)}, ${pos.tmY.toStringAsFixed(3)}');
+      buf.writeln('고도: ${pos.altitude?.toStringAsFixed(2) ?? "-"}m  HDOP: ${pos.hdop ?? "-"}  diffAge: ${pos.diffAge ?? "null"}');
+    }
+
+    buf.writeln('RTCM: ${_gnssService.rtcmSendCount}회 ${(_gnssService.rtcmBytesSent / 1024).toStringAsFixed(1)}KB err:${_gnssService.rtcmFlushErrors}');
+    buf.writeln('NTRIP: ${_ntripService.state.name} ${(_ntripService.bytesReceived / 1024).toStringAsFixed(1)}KB');
+    if (_ntripService.rtcmTypeCounts.isNotEmpty) {
+      buf.writeln('RTCM msg: ${_ntripService.rtcmTypeCounts.entries.map((e) => '${NtripService.rtcmTypeName(e.key)}(${e.value})').join(', ')}');
+    }
+    buf.writeln('');
+
+    // 수신기 명령 응답
+    if (responses.isNotEmpty) {
+      buf.writeln('[수신기 응답]');
+      for (final r in responses) {
+        // 깨진 문자 제거
+        final clean = r.replaceAll(RegExp(r'[^\x20-\x7E가-힣ㄱ-ㅎㅏ-ㅣ]'), '');
+        if (clean.trim().isNotEmpty) buf.writeln(clean);
+      }
+      buf.writeln('');
+    }
+
+    // NTRIP 로그 (이모지 제거)
+    if (_ntripService.debugLog.isNotEmpty) {
+      buf.writeln('[NTRIP 로그]');
+      for (final l in _ntripService.debugLog) {
+        final clean = l.replaceAll(RegExp(r'[^\x20-\x7E가-힣ㄱ-ㅎㅏ-ㅣ]'), '');
+        if (clean.trim().isNotEmpty) buf.writeln(clean);
+      }
+    }
+
+    return buf.toString();
+  }
+
+  /// 디버그 정보를 파일로 저장 후 공유 (카카오톡/드라이브 등)
+  Future<void> _shareDebugInfo(List<String> responses) async {
+    final text = _buildDebugText(responses);
+
+    try {
+      // 캐시 디렉토리 사용 (공유 권한 문제 없음)
+      final cacheDir = await getTemporaryDirectory();
+      final ts = DateTime.now();
+      final fileName = 'i70_debug_${ts.month.toString().padLeft(2, '0')}${ts.day.toString().padLeft(2, '0')}_${ts.hour.toString().padLeft(2, '0')}${ts.minute.toString().padLeft(2, '0')}.txt';
+      final filePath = '${cacheDir.path}/$fileName';
+
+      final file = File(filePath);
+      await file.writeAsString(text, encoding: utf8);
+
+      // Download에도 백업 저장
+      try {
+        final dlDir = Directory('/storage/emulated/0/Download');
+        if (await dlDir.exists()) {
+          await file.copy('${dlDir.path}/$fileName');
+        }
+      } catch (_) {}
+
+      _showStatusMessage('저장 완료: $fileName', Colors.greenAccent);
+
+      // 파일로 공유
+      await Share.shareXFiles(
+        [XFile(filePath, mimeType: 'text/plain')],
+        subject: 'i70 디버그 정보',
+      );
+    } catch (e) {
+      _showStatusMessage('파일 공유 실패: $e', Colors.orange);
+      Share.share(text, subject: 'i70 디버그 정보');
+    }
+  }
+
   /// GPS 연결 후 i70 내부 NTRIP 클라이언트 자동 설정
   void _autoConnectNtrip() {
     debugPrint('[AUTO-NTRIP] 3초 후 i70 내부 NTRIP 설정 예약');
@@ -976,7 +1350,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     });
   }
 
-  Future<void> _showBluetoothDeviceDialog() async {
+  Future<void> _showBluetoothDeviceDialog({bool skipInit = false}) async {
     final devices = await _gnssService.getPairedDevices();
 
     if (!mounted) return;
@@ -1025,9 +1399,13 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                       ),
                       onTap: () {
                         Navigator.pop(ctx);
-                        _gnssService.connect(device);
-                        // GPS 연결 후 NTRIP 자동 연결
-                        _autoConnectNtrip();
+                        _gnssService.connect(device, skipInit: skipInit);
+                        if (!skipInit) {
+                          // GPS 연결 후 NTRIP 자동 연결
+                          _autoConnectNtrip();
+                        } else {
+                          _showStatusMessage('디버그 연결 (초기화 생략)', Colors.amber);
+                        }
                       },
                     )),
               const SizedBox(height: 8),
@@ -2353,10 +2731,14 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       }
     }
 
+    // 기초라인 근접 측점 검색용 DXF 좌표 저장
+    final dxfPt = _screenToDxf(cursorTip, canvasSize);
+
     setState(() {
       _touchPoint = touchPoint;
       _activeSnap = snap.snap;
       _highlightEntity = found;
+      if (dxfPt != null) _lastSelectDxfPoint = dxfPt;
     });
   }
 
@@ -2613,6 +2995,12 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   // 속성 패널 탭 인덱스: 0=속성, 1=측점데이터
   int _propertyTabIndex = 0;
 
+  // 기초라인/횡단 레이어 이름 (근접 측점 검색 대상)
+  static const _baselineLineLayers = {
+    '좌안기초라인', '우안기초라인',
+    '좌안기초횡단', '우안기초횡단',
+  };
+
   /// 선택된 엔티티에서 측점 데이터 찾기
   StationData? _findStationForEntity(Map<String, dynamic> entity) {
     final stationNo = entity['_stationNo'] as String?;
@@ -2633,7 +3021,120 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
       final found = widget.stations.where((s) => s.no == text).toList();
       if (found.isNotEmpty) return found.first;
     }
+    // 기초라인/횡단 엔티티: 터치 지점에서 가장 가까운 기초측점의 측점 데이터 반환
+    final layer = entity['layer'] as String?;
+    if (layer != null && _baselineLineLayers.contains(layer) && _lastSelectDxfPoint != null) {
+      final nearest = _findNearestBaselineStation(layer);
+      if (nearest != null) return nearest;
+    }
     return null;
+  }
+
+  /// 기초라인 레이어에서 터치 지점과 가장 가까운 측점 찾기
+  StationData? _findNearestBaselineStation(String layer) {
+    if (_lastSelectDxfPoint == null) return null;
+    final tp = _lastSelectDxfPoint!;
+    final isLeft = layer.startsWith('좌안');
+    final pointLayer = isLeft ? '좌안기초측점' : '우안기초측점';
+    final allEntities = _dxfData?['entities'] as List? ?? [];
+
+    double bestDist = double.infinity;
+    String? bestStationNo;
+    for (final e in allEntities) {
+      if (e['layer'] != pointLayer || e['type'] != 'CIRCLE') continue;
+      final cx = (e['cx'] as num).toDouble();
+      final cy = (e['cy'] as num).toDouble();
+      final d = (tp.x - cx) * (tp.x - cx) + (tp.y - cy) * (tp.y - cy);
+      if (d < bestDist) {
+        bestDist = d;
+        bestStationNo = e['_stationNo'] as String?;
+      }
+    }
+    if (bestStationNo != null) {
+      final found = widget.stations.where((s) => s.no == bestStationNo).toList();
+      if (found.isNotEmpty) return found.first;
+    }
+    return null;
+  }
+
+  /// 기초라인 터치 지점의 양쪽 측점 사이 기초바닥레벨 5m 보간 데이터 반환
+  /// 반환: (label, foundationLevel) 리스트, 또는 null
+  List<(String, double)>? _findBaselineInterpolData(Map<String, dynamic> entity) {
+    final layer = entity['layer'] as String?;
+    if (layer == null || !_baselineLineLayers.contains(layer)) return null;
+    if (_lastSelectDxfPoint == null) return null;
+    final tp = _lastSelectDxfPoint!;
+    final isLeft = layer.startsWith('좌안');
+    final pointLayer = isLeft ? '좌안기초측점' : '우안기초측점';
+    final allEntities = _dxfData?['entities'] as List? ?? [];
+
+    // 해당 사이드의 기초측점 수집 (거리순 정렬)
+    final circles = <({double cx, double cy, String stationNo, double dist})>[];
+    for (final e in allEntities) {
+      if (e['layer'] != pointLayer || e['type'] != 'CIRCLE') continue;
+      final sno = e['_stationNo'] as String?;
+      final d = (e['_dist'] as num?)?.toDouble();
+      if (sno == null || d == null) continue;
+      circles.add((
+        cx: (e['cx'] as num).toDouble(),
+        cy: (e['cy'] as num).toDouble(),
+        stationNo: sno,
+        dist: d,
+      ));
+    }
+    if (circles.length < 2) return null;
+    circles.sort((a, b) => a.dist.compareTo(b.dist));
+
+    // 터치 지점에서 가장 가까운 폴리라인 세그먼트 찾기
+    // → 양쪽 측점의 인덱스 결정
+    double bestSegDist = double.infinity;
+    int bestSegIdx = 0;
+    for (int i = 0; i < circles.length - 1; i++) {
+      final d = _distToSegment(tp.x, tp.y,
+        circles[i].cx, circles[i].cy,
+        circles[i + 1].cx, circles[i + 1].cy);
+      if (d < bestSegDist) {
+        bestSegDist = d;
+        bestSegIdx = i;
+      }
+    }
+
+    final stA = circles[bestSegIdx];
+    final stB = circles[bestSegIdx + 1];
+
+    // 양쪽 측점의 StationData 찾기
+    final sdA = widget.stations.where((s) => s.no == stA.stationNo).toList();
+    final sdB = widget.stations.where((s) => s.no == stB.stationNo).toList();
+    if (sdA.isEmpty || sdB.isEmpty) return null;
+    final a = sdA.first;
+    final b = sdB.first;
+
+    final flA = a.foundationLevel;
+    final flB = b.foundationLevel;
+    if (flA == null || flB == null) return null;
+
+    final distA = a.distance ?? stA.dist;
+    final distB = b.distance ?? stB.dist;
+    final span = distB - distA;
+    if (span <= 0) return null;
+
+    // 5m 단위 보간
+    final result = <(String, double)>[];
+    result.add((a.no, flA));
+
+    const interval = 5.0;
+    int chainIdx = 1;
+    double d = distA + interval;
+    while (d < distB - 0.1) {
+      final t = (d - distA) / span;
+      final fl = flA + (flB - flA) * t;
+      result.add(('+${(chainIdx * interval).toInt()}', fl));
+      chainIdx++;
+      d += interval;
+    }
+
+    result.add((b.no, flB));
+    return result;
   }
 
   /// 속성 편집 패널
@@ -2647,6 +3148,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     // 측점 데이터 매칭 시도
     final stationData = count == 1 ? _findStationForEntity(firstEntity) : null;
     final hasStationTab = stationData != null;
+    // 기초라인 보간 데이터 (기초라인 중간 터치 시)
+    final interpolData = count == 1 ? _findBaselineInterpolData(firstEntity) : null;
 
     final colors = [
       (0xFFFF0000, '빨강'),
@@ -2782,6 +3285,89 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   },
                 ),
               ),
+              // 기초바닥레벨 표시 (측점 데이터가 있을 때)
+              if (hasStationTab && stationData.foundationLevel != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.cyan.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.cyan.withValues(alpha: 0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Text('기초바닥레벨', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                      const SizedBox(width: 8),
+                      Text(
+                        stationData.foundationLevel!.toStringAsFixed(3),
+                        style: const TextStyle(color: Colors.cyanAccent, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '(${stationData.no})',
+                        style: const TextStyle(color: Colors.white38, fontSize: 10),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              // 기초라인 보간 데이터 (5m 단위 기초바닥레벨)
+              if (interpolData != null && interpolData.length >= 2) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Text('구간 기초바닥레벨 (5m 보간)',
+                            style: TextStyle(color: Colors.orangeAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                          const Spacer(),
+                          Text('${interpolData.length}점',
+                            style: const TextStyle(color: Colors.white38, fontSize: 10)),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      ...interpolData.map((item) {
+                        final isStation = !item.$1.startsWith('+');
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 1.5),
+                          child: Row(
+                            children: [
+                              SizedBox(
+                                width: 80,
+                                child: Text(
+                                  item.$1,
+                                  style: TextStyle(
+                                    color: isStation ? Colors.white : Colors.white54,
+                                    fontSize: 11,
+                                    fontWeight: isStation ? FontWeight.bold : FontWeight.normal,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                item.$2.toStringAsFixed(3),
+                                style: TextStyle(
+                                  color: isStation ? Colors.orangeAccent : Colors.orange.withValues(alpha: 0.7),
+                                  fontSize: 11,
+                                  fontWeight: isStation ? FontWeight.bold : FontWeight.normal,
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+              ],
             ] else if (_propertyTabIndex == 1) ...[
               _buildStationDataView(stationData),
             ],
