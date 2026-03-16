@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'cp949_decoder.dart';
 
 /// DXF 파일 처리 서비스
 class DxfService {
@@ -62,6 +64,45 @@ class DxfService {
     } catch (e) {
       debugPrint('DXF 파싱 오류: $e');
       return null;
+    }
+  }
+
+  /// DXF 바이트에서 코드페이지를 감지하여 올바른 문자열로 디코딩
+  /// AutoCAD는 ANSI_949로 표기하지만 실제 UTF-8인 경우가 많으므로
+  /// UTF-8을 먼저 시도하고 실패 시 CP949로 폴백합니다.
+  static String decodeDxfBytes(List<int> bytes) {
+    final header = latin1.decode(bytes.length > 4096 ? bytes.sublist(0, 4096) : bytes);
+    final isAnsi949 = header.contains('ANSI_949');
+
+    // UTF-8 먼저 시도 (ANSI_949 표기여도 실제 UTF-8인 경우 다수)
+    try {
+      final result = utf8.decode(bytes);
+      debugPrint('[DXF Decode] UTF-8 디코딩 성공 (codepage=${isAnsi949 ? "ANSI_949" : "other"})');
+      return result;
+    } catch (_) {}
+
+    // UTF-8 실패 시 CP949 시도
+    if (isAnsi949) {
+      debugPrint('[DXF Decode] UTF-8 실패 → CP949 디코딩');
+      return decodeCP949(bytes);
+    }
+
+    // 그 외 latin1 폴백
+    debugPrint('[DXF Decode] latin1 폴백');
+    return latin1.decode(bytes);
+  }
+
+  /// DXF 바이트의 인코딩이 CP949인지 확인
+  /// 헤더의 ANSI_949 표기만으로는 불충분 — 실제 UTF-8 디코딩 가능 여부로 판단
+  static bool isCP949(List<int> bytes) {
+    final header = latin1.decode(bytes.length > 4096 ? bytes.sublist(0, 4096) : bytes);
+    if (!header.contains('ANSI_949')) return false;
+    // 실제 UTF-8로 디코딩 가능하면 UTF-8 파일 (ANSI_949 표기지만)
+    try {
+      utf8.decode(bytes);
+      return false; // UTF-8 성공 → CP949 아님
+    } catch (_) {
+      return true; // UTF-8 실패 → 진짜 CP949
     }
   }
 
@@ -1306,5 +1347,528 @@ class DxfService {
     if (y < getMinY()) setMinY(y);
     if (x > getMaxX()) setMaxX(x);
     if (y > getMaxY()) setMaxY(y);
+  }
+
+  /// DXF 색상코드 (ARGB → ACI 근사)
+  static int _argbToAci(int argb) {
+    final r = (argb >> 16) & 0xFF;
+    final g = (argb >> 8) & 0xFF;
+    final b = argb & 0xFF;
+    // 기본 ACI 색상 매핑
+    const aciColors = <int, List<int>>{
+      1: [255, 0, 0],       // 빨강
+      2: [255, 255, 0],     // 노랑
+      3: [0, 255, 0],       // 초록
+      4: [0, 255, 255],     // 시안
+      5: [0, 0, 255],       // 파랑
+      6: [255, 0, 255],     // 마젠타
+      7: [255, 255, 255],   // 흰색
+      8: [128, 128, 128],   // 회색
+      9: [192, 192, 192],   // 밝은회색
+      10: [255, 0, 0],
+      30: [255, 127, 0],    // 주황
+      50: [255, 255, 0],
+      90: [0, 255, 0],
+      150: [0, 255, 255],
+      210: [0, 0, 255],
+    };
+    int bestAci = 7;
+    double bestDist = double.infinity;
+    for (final entry in aciColors.entries) {
+      final dr = (r - entry.value[0]).toDouble();
+      final dg = (g - entry.value[1]).toDouble();
+      final db = (b - entry.value[2]).toDouble();
+      final dist = dr * dr + dg * dg + db * db;
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestAci = entry.key;
+      }
+    }
+    // 연두색 (0xFF00FF00 계열) → ACI 3
+    if (g > 200 && r > 100 && r < 255 && b < 100) return 3;
+    return bestAci;
+  }
+
+  /// DXF 그룹코드-값 쌍을 한 줄씩 기록
+  static void _w(StringBuffer sb, int code, String value) {
+    sb.write('${code.toString()}\n${value}\n');
+  }
+
+  /// 엔티티 하나를 AC1032 호환 DXF 바이트로 변환 (핸들+서브클래스 마커 포함)
+  static List<int> _entityToDxfBytes(Map<String, dynamic> e, int handleNum, String nl, {bool useCP949 = false, String ownerHandle = '1F'}) {
+    final buf = <int>[];
+    final nlBytes = nl.codeUnits;
+    final type = e['type'] as String?;
+    if (type == null) return [];
+    final layer = (e['layer'] ?? '0').toString();
+    final color = e['resolvedColor'] != null
+        ? _argbToAci((e['resolvedColor'] as num).toInt())
+        : (e['color'] as int? ?? 7);
+    final handle = handleNum.toRadixString(16).toUpperCase();
+
+    /// 그룹코드+값을 바이트로 기록 (그룹코드는 3자리 우측정렬)
+    void w(int code, String value, {bool mayContainKorean = false}) {
+      buf.addAll(code.toString().padLeft(3).codeUnits);
+      buf.addAll(nlBytes);
+      if (mayContainKorean && useCP949) {
+        buf.addAll(encodeCP949(value));
+      } else if (mayContainKorean) {
+        buf.addAll(utf8.encode(value));
+      } else {
+        buf.addAll(value.codeUnits);
+      }
+      buf.addAll(nlBytes);
+    }
+
+    switch (type) {
+      case 'LINE':
+        w(0, 'LINE');
+        w(5, handle);
+        w(330, ownerHandle);
+        w(100, 'AcDbEntity');
+        w(8, layer, mayContainKorean: true);
+        w(62, color.toString());
+        w(100, 'AcDbLine');
+        w(10, (e['x1'] as num).toDouble().toString());
+        w(20, (e['y1'] as num).toDouble().toString());
+        w(30, '0.0');
+        w(11, (e['x2'] as num).toDouble().toString());
+        w(21, (e['y2'] as num).toDouble().toString());
+        w(31, '0.0');
+        break;
+      case 'CIRCLE':
+        w(0, 'CIRCLE');
+        w(5, handle);
+        w(330, ownerHandle);
+        w(100, 'AcDbEntity');
+        w(8, layer, mayContainKorean: true);
+        w(62, color.toString());
+        w(100, 'AcDbCircle');
+        w(10, (e['cx'] as num).toDouble().toString());
+        w(20, (e['cy'] as num).toDouble().toString());
+        w(30, '0.0');
+        w(40, (e['radius'] as num).toDouble().toString());
+        break;
+      case 'ARC':
+        w(0, 'ARC');
+        w(5, handle);
+        w(330, ownerHandle);
+        w(100, 'AcDbEntity');
+        w(8, layer, mayContainKorean: true);
+        w(62, color.toString());
+        w(100, 'AcDbCircle');
+        w(10, (e['cx'] as num).toDouble().toString());
+        w(20, (e['cy'] as num).toDouble().toString());
+        w(30, '0.0');
+        w(40, (e['radius'] as num).toDouble().toString());
+        w(100, 'AcDbArc');
+        w(50, (e['startAngle'] as num).toDouble().toString());
+        w(51, (e['endAngle'] as num).toDouble().toString());
+        break;
+      case 'TEXT':
+        w(0, 'TEXT');
+        w(5, handle);
+        w(330, ownerHandle);
+        w(100, 'AcDbEntity');
+        w(8, layer, mayContainKorean: true);
+        w(62, color.toString());
+        w(100, 'AcDbText');
+        w(10, (e['x'] as num).toDouble().toString());
+        w(20, (e['y'] as num).toDouble().toString());
+        w(30, '0.0');
+        w(40, (e['height'] as num? ?? 1.0).toDouble().toString());
+        w(1, (e['text'] ?? '').toString(), mayContainKorean: true);
+        w(100, 'AcDbText');
+        break;
+      case 'POINT':
+        w(0, 'POINT');
+        w(5, handle);
+        w(330, ownerHandle);
+        w(100, 'AcDbEntity');
+        w(8, layer, mayContainKorean: true);
+        w(62, color.toString());
+        w(100, 'AcDbPoint');
+        w(10, (e['x'] as num).toDouble().toString());
+        w(20, (e['y'] as num).toDouble().toString());
+        w(30, '0.0');
+        break;
+      case 'LWPOLYLINE':
+        final points = e['points'] as List?;
+        if (points == null || points.isEmpty) break;
+        w(0, 'LWPOLYLINE');
+        w(5, handle);
+        w(330, ownerHandle);
+        w(100, 'AcDbEntity');
+        w(8, layer, mayContainKorean: true);
+        w(62, color.toString());
+        w(100, 'AcDbPolyline');
+        w(90, points.length.toString());
+        w(70, (e['closed'] == true) ? '1' : '0');
+        w(43, '0.0');
+        for (final pt in points) {
+          w(10, (pt['x'] as num).toDouble().toString());
+          w(20, (pt['y'] as num).toDouble().toString());
+          w(42, ((pt['bulge'] as num?) ?? 0.0).toDouble().toString());
+        }
+        break;
+    }
+    return buf;
+  }
+
+  /// 원본 DXF 바이너리에서 가장 큰 핸들 번호를 찾아 반환
+  static int _findMaxHandle(List<int> data) {
+    int maxHandle = 0;
+    final content = String.fromCharCodes(data);
+    // 그룹코드 5 뒤의 핸들 값 찾기
+    final regex = RegExp(r'[\r\n]\s*5\r?\n\s*([0-9A-Fa-f]+)\r?\n');
+    for (final match in regex.allMatches(content)) {
+      final h = int.tryParse(match.group(1)!, radix: 16) ?? 0;
+      if (h > maxHandle) maxHandle = h;
+    }
+    return maxHandle;
+  }
+
+  /// $HANDSEED 값을 업데이트 (다음 사용 가능한 핸들 번호)
+  /// AutoCAD는 HANDSEED가 실제 최대 핸들보다 작으면 파일을 거부함
+  static List<int> _updateHandSeed(List<int> data, int newSeed, String nl) {
+    // HANDSEED 패턴: "$HANDSEED{nl}  5{nl}{hex}{nl}"
+    final marker = '\$HANDSEED${nl}'.codeUnits;
+    final pos = _findBytes(data, marker, 0);
+    if (pos < 0) return data;
+
+    // "  5{nl}" 찾기
+    final code5Start = pos + marker.length;
+    final code5Marker = '  5$nl'.codeUnits;
+    if (!_matchBytes(data, code5Start, code5Marker)) return data;
+
+    // 기존 핸들 값의 끝 위치 찾기
+    final valueStart = code5Start + code5Marker.length;
+    final nlBytes = nl.codeUnits;
+    int valueEnd = valueStart;
+    while (valueEnd < data.length) {
+      if (_matchBytes(data, valueEnd, nlBytes)) break;
+      valueEnd++;
+    }
+
+    // 새 HANDSEED 값으로 교체
+    final newValue = newSeed.toRadixString(16).toUpperCase().codeUnits;
+    final result = <int>[];
+    result.addAll(data.sublist(0, valueStart));
+    result.addAll(newValue);
+    result.addAll(data.sublist(valueEnd));
+    return result;
+  }
+
+  /// 바이트 배열의 특정 위치에서 패턴이 일치하는지 확인
+  static bool _matchBytes(List<int> data, int offset, List<int> pattern) {
+    if (offset + pattern.length > data.length) return false;
+    for (int i = 0; i < pattern.length; i++) {
+      if (data[offset + i] != pattern[i]) return false;
+    }
+    return true;
+  }
+
+  /// ENTITIES 섹션의 첫 번째 엔티티에서 330 (owner handle) 값을 추출
+  /// 대부분 Model_Space 블록 레코드 핸들 (보통 '1F')
+  static String _findModelSpaceOwner(List<int> data, String nl) {
+    final marker = 'ENTITIES$nl'.codeUnits;
+    final pos = _findBytes(data, marker, 0);
+    if (pos < 0) return '1F';
+    // ENTITIES 이후 첫 330 그룹코드 찾기
+    final content = String.fromCharCodes(data.sublist(pos, (pos + 500).clamp(0, data.length)));
+    final regex = RegExp(r'330\r?\n\s*([0-9A-Fa-f]+)\r?\n');
+    final match = regex.firstMatch(content);
+    return match?.group(1) ?? '1F';
+  }
+
+  /// 원본 DXF 바이트 데이터에 새 엔티티를 삽입하여 내보내기
+  /// originalBytes가 있으면 바이너리 삽입, 없으면 새로 생성
+  static Future<List<int>?> exportDxfBytes(
+    Map<String, dynamic> dxfData,
+    List<int>? originalBytes,
+  ) async {
+    try {
+      final entities = dxfData['entities'] as List;
+      final originalEntityCount = dxfData['_originalEntityCount'] as int? ?? 0;
+
+      if (originalBytes != null && originalBytes.isNotEmpty) {
+        // 새로 추가된 엔티티만 추출
+        final newEntities = originalEntityCount > 0 && originalEntityCount < entities.length
+            ? entities.sublist(originalEntityCount)
+            : <dynamic>[];
+
+        if (newEntities.isEmpty) {
+          return originalBytes;
+        }
+
+        // 줄바꿈 감지
+        final hasCRLF = _containsBytes(originalBytes, [13, 10]); // \r\n
+        final nl = hasCRLF ? '\r\n' : '\n';
+
+        // ENTITIES 섹션의 ENDSEC 바이트 위치 찾기
+        final entitiesMarker = 'ENTITIES$nl'.codeUnits;
+        final endsecMarker = '0${nl}ENDSEC$nl'.codeUnits;
+
+        int entitiesPos = _findBytes(originalBytes, entitiesMarker, 0);
+        if (entitiesPos < 0) return null;
+
+        int endsecPos = _findBytes(originalBytes, endsecMarker, entitiesPos);
+        if (endsecPos < 0) return null;
+
+        // 최대 핸들 번호 찾기
+        int handleNum = _findMaxHandle(originalBytes) + 1;
+
+        // 인코딩 감지
+        final useCP949 = isCP949(originalBytes);
+
+        // Model_Space owner handle 찾기
+        final ownerHandle = _findModelSpaceOwner(originalBytes, nl);
+
+        // 새 엔티티 바이트 생성
+        final newBytes = <int>[];
+        for (final e in newEntities) {
+          newBytes.addAll(_entityToDxfBytes(e, handleNum, nl, useCP949: useCP949, ownerHandle: ownerHandle));
+          handleNum++;
+        }
+
+        // 원본에 삽입
+        final result = <int>[];
+        result.addAll(originalBytes.sublist(0, endsecPos));
+        result.addAll(newBytes);
+        result.addAll(originalBytes.sublist(endsecPos));
+
+        // $HANDSEED 업데이트 (handleNum은 마지막 사용+1 상태)
+        return _updateHandSeed(result, handleNum, nl);
+      }
+
+      return null;
+    } catch (e) {
+      debugPrint('DXF 내보내기 오류: $e');
+      return null;
+    }
+  }
+
+  static bool _containsBytes(List<int> data, List<int> pattern) {
+    return _findBytes(data, pattern, 0) >= 0;
+  }
+
+  static int _findBytes(List<int> data, List<int> pattern, int start) {
+    outer:
+    for (int i = start; i <= data.length - pattern.length; i++) {
+      for (int j = 0; j < pattern.length; j++) {
+        if (data[i + j] != pattern[j]) continue outer;
+      }
+      return i;
+    }
+    return -1;
+  }
+
+  /// 원본 DXF 바이트에서 특정 레이어의 엔티티를 제거
+  /// dxfData의 entities/layers도 함께 수정
+  /// 반환: 수정된 originalBytes (null이면 실패)
+  static List<int>? removeLayerFromBytes(
+    Map<String, dynamic> dxfData,
+    List<int> originalBytes,
+    String layerName,
+  ) {
+    try {
+      // 줄바꿈 감지
+      final hasCRLF = _containsBytes(originalBytes, [13, 10]);
+      final nl = hasCRLF ? '\r\n' : '\n';
+      final nlBytes = nl.codeUnits;
+
+      // 인코딩 감지 — 레이어 이름 바이트
+      final useCP949 = isCP949(originalBytes);
+      List<int> layerNameBytes;
+      if (useCP949) {
+        try {
+          layerNameBytes = utf8.encode(layerName); // 먼저 UTF-8 시도
+          // CP949 파일이면 CP949 인코딩 사용
+          // 하지만 실제로 파일이 CP949이더라도 레이어 이름 검색은 바이트 매칭으로
+        } catch (_) {
+          layerNameBytes = utf8.encode(layerName);
+        }
+      } else {
+        layerNameBytes = utf8.encode(layerName);
+      }
+
+      // ENTITIES 섹션 위치 찾기
+      final endsecMarker = '0${nl}ENDSEC$nl'.codeUnits;
+
+      int entitiesPos = _findBytes(originalBytes, 'ENTITIES$nl'.codeUnits, 0);
+      if (entitiesPos < 0) return null;
+
+      int endsecPos = _findBytes(originalBytes, endsecMarker, entitiesPos);
+      if (endsecPos < 0) return null;
+
+      // ENTITIES 섹션 내에서 엔티티 단위로 파싱하여 필터링
+      // 각 엔티티는 "0\r\n타입명\r\n" 으로 시작
+      final entityStartMarker = '0$nl'.codeUnits;
+      final layerGroupCode = '8$nl'.codeUnits; // 그룹코드 8 = 레이어
+
+      // ENTITIES 마커 다음부터 ENDSEC까지의 영역
+      final sectionStart = entitiesPos + 'ENTITIES$nl'.codeUnits.length;
+
+      // 엔티티 시작 위치들 수집
+      final entityPositions = <int>[];
+      int pos = sectionStart;
+      while (pos < endsecPos) {
+        int nextEntity = _findBytes(originalBytes, entityStartMarker, pos);
+        if (nextEntity < 0 || nextEntity >= endsecPos) break;
+        entityPositions.add(nextEntity);
+        pos = nextEntity + entityStartMarker.length;
+        // 엔티티 타입명 건너뛰기 (다음 줄)
+        while (pos < endsecPos && originalBytes[pos] != nlBytes[0]) pos++;
+        pos += nlBytes.length;
+      }
+
+      // 삭제할 엔티티 범위 수집
+      final removeRanges = <(int, int)>[];
+      for (int i = 0; i < entityPositions.length; i++) {
+        final start = entityPositions[i];
+        final end = i + 1 < entityPositions.length ? entityPositions[i + 1] : endsecPos;
+
+        // 이 엔티티의 레이어 확인 (그룹코드 8 검색)
+        int searchPos = start;
+        bool isTargetLayer = false;
+        while (searchPos < end - layerGroupCode.length - layerNameBytes.length) {
+          // "8\r\n" 찾기
+          if (_matchBytes(originalBytes, searchPos, layerGroupCode)) {
+            // 다음 줄이 레이어 이름인지 확인
+            final nameStart = searchPos + layerGroupCode.length;
+            // 줄 끝까지 읽기
+            int nameEnd = nameStart;
+            while (nameEnd < end && originalBytes[nameEnd] != nlBytes[0]) nameEnd++;
+            final nameBytes = originalBytes.sublist(nameStart, nameEnd);
+
+            // 레이어 이름 비교 (UTF-8 또는 CP949)
+            String foundName;
+            try {
+              foundName = utf8.decode(nameBytes);
+            } catch (_) {
+              foundName = String.fromCharCodes(nameBytes);
+            }
+            if (foundName.trim() == layerName) {
+              isTargetLayer = true;
+              break;
+            }
+          }
+          searchPos++;
+        }
+
+        if (isTargetLayer) {
+          removeRanges.add((start, end));
+        }
+      }
+
+      if (removeRanges.isEmpty) return originalBytes; // 삭제할 게 없음
+
+      // 바이트 재조립 (삭제 범위 제외)
+      final result = <int>[];
+      int lastEnd = 0;
+      for (final (start, end) in removeRanges) {
+        result.addAll(originalBytes.sublist(lastEnd, start));
+        lastEnd = end;
+      }
+      result.addAll(originalBytes.sublist(lastEnd));
+
+      // dxfData에서도 제거
+      final entities = dxfData['entities'] as List;
+      entities.removeWhere((e) => e['layer'] == layerName);
+      final layers = dxfData['layers'] as List;
+      layers.remove(layerName);
+      // originalEntityCount 업데이트
+      dxfData['_originalEntityCount'] = entities.length;
+
+      debugPrint('[DXF] 레이어 "$layerName" 삭제: ${removeRanges.length}개 엔티티 제거');
+      return result;
+    } catch (e) {
+      debugPrint('[DXF] 레이어 삭제 오류: $e');
+      return null;
+    }
+  }
+
+  /// 원본 DXF 바이트에서 특정 엔티티 1개를 제거
+  /// entityIndex: dxfData['entities'] 내 인덱스
+  static List<int>? removeEntityFromBytes(
+    Map<String, dynamic> dxfData,
+    List<int> originalBytes,
+    int entityIndex,
+  ) {
+    try {
+      final entities = dxfData['entities'] as List;
+      if (entityIndex < 0 || entityIndex >= entities.length) return null;
+
+      final entity = entities[entityIndex];
+      final entityLayer = entity['layer'] as String?;
+      final entityType = entity['type'] as String?;
+
+      // 줄바꿈 감지
+      final hasCRLF = _containsBytes(originalBytes, [13, 10]);
+      final nl = hasCRLF ? '\r\n' : '\n';
+      final nlBytes = nl.codeUnits;
+
+      // ENTITIES 섹션 위치
+      int entitiesPos = _findBytes(originalBytes, 'ENTITIES$nl'.codeUnits, 0);
+      if (entitiesPos < 0) return null;
+      final endsecMarker = '0${nl}ENDSEC$nl'.codeUnits;
+      int endsecPos = _findBytes(originalBytes, endsecMarker, entitiesPos);
+      if (endsecPos < 0) return null;
+
+      final sectionStart = entitiesPos + 'ENTITIES$nl'.codeUnits.length;
+      final entityStartMarker = '0$nl'.codeUnits;
+
+      // 모든 엔티티 위치 수집
+      final entityPositions = <int>[];
+      int pos = sectionStart;
+      while (pos < endsecPos) {
+        int nextEntity = _findBytes(originalBytes, entityStartMarker, pos);
+        if (nextEntity < 0 || nextEntity >= endsecPos) break;
+        entityPositions.add(nextEntity);
+        pos = nextEntity + entityStartMarker.length;
+        while (pos < endsecPos && originalBytes[pos] != nlBytes[0]) pos++;
+        pos += nlBytes.length;
+      }
+
+      // entityIndex번째로 매칭되는 엔티티 찾기
+      // dxfData의 entities 순서와 바이트 내 순서가 같다고 가정
+      if (entityIndex >= entityPositions.length) return null;
+
+      final start = entityPositions[entityIndex];
+      final end = entityIndex + 1 < entityPositions.length ? entityPositions[entityIndex + 1] : endsecPos;
+
+      // 바이트 재조립
+      final result = <int>[];
+      result.addAll(originalBytes.sublist(0, start));
+      result.addAll(originalBytes.sublist(end));
+
+      // dxfData에서도 제거
+      entities.removeAt(entityIndex);
+      dxfData['_originalEntityCount'] = entities.length;
+
+      debugPrint('[DXF] 엔티티 삭제: #$entityIndex type=$entityType layer=$entityLayer');
+      return result;
+    } catch (e) {
+      debugPrint('[DXF] 엔티티 삭제 오류: $e');
+      return null;
+    }
+  }
+
+  /// DXF 파일 저장 (바이너리)
+  static Future<bool> saveDxfToFile(
+    Map<String, dynamic> dxfData,
+    String filePath, {
+    List<int>? originalBytes,
+  }) async {
+    final bytes = await exportDxfBytes(dxfData, originalBytes);
+    if (bytes == null) return false;
+    try {
+      final file = File(filePath);
+      await file.writeAsBytes(bytes);
+      return true;
+    } catch (e) {
+      debugPrint('DXF 저장 오류: $e');
+      return false;
+    }
   }
 }

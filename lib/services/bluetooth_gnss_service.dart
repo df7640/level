@@ -121,16 +121,25 @@ class BluetoothGnssService extends ChangeNotifier {
         fileLogger?.call('[BT] === 초기화 생략 (테라에스 설정 유지) ===');
       }
 
+      // 수신 패킷 카운터 (hex dump 로그용)
+      int rxCount = 0;
+
       _connection!.input!.listen(
         (Uint8List data) {
+          rxCount++;
+          // 처음 50개 수신 패킷은 전체 hex dump (테라에스 캡처와 비교용)
+          if (rxCount <= 50) {
+            final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+            fileLogger?.call('[BT-HEX] RX#$rxCount ${data.length}B: $hex');
+          }
           // i70에서 데이터 수신 → 초기화 명령 응답 대기 해제
           _onBinaryResponse();
           // 디버그 모드일 때 바이너리 메시지 감지
           if (_isDebugQuerying) {
             _detectBinaryResponses(data);
           }
-          _buffer += utf8.decode(data, allowMalformed: true);
-          _processBuffer();
+          // 바이너리/텍스트 분리 수신: $$ 바이너리 프레임 제거 후 NMEA만 버퍼에 추가
+          _processRawData(data);
         },
         onDone: () {
           debugPrint('[GNSS] 연결 종료');
@@ -152,6 +161,74 @@ class BluetoothGnssService extends ChangeNotifier {
       _connectionState = GnssConnectionState.error;
       notifyListeners();
     }
+  }
+
+  // 바이너리 프레임 조립용 버퍼
+  final List<int> _binBuffer = [];
+
+  /// raw bytes에서 $$(0x24 0x24) 바이너리 프레임 분리 → 나머지 NMEA만 텍스트 버퍼에 추가
+  void _processRawData(Uint8List data) {
+    // 이전 잔여 바이너리 버퍼에 새 데이터 추가
+    _binBuffer.addAll(data);
+
+    int textStart = 0;
+    int i = 0;
+
+    while (i < _binBuffer.length - 1) {
+      // $$ 바이너리 프레임 시작 감지
+      if (_binBuffer[i] == 0x24 && _binBuffer[i + 1] == 0x24) {
+        // $$ 앞의 텍스트(NMEA)를 버퍼에 추가
+        if (i > textStart) {
+          final textBytes = _binBuffer.sublist(textStart, i);
+          _buffer += utf8.decode(Uint8List.fromList(textBytes), allowMalformed: true);
+        }
+
+        // 바이너리 프레임 끝(09 24 0D 0A) 찾기
+        int endIdx = -1;
+        for (int j = i + 4; j < _binBuffer.length - 3; j++) {
+          if (_binBuffer[j] == 0x09 && _binBuffer[j + 1] == 0x24 &&
+              _binBuffer[j + 2] == 0x0D && _binBuffer[j + 3] == 0x0A) {
+            endIdx = j + 4;
+            break;
+          }
+        }
+
+        if (endIdx == -1) {
+          // 프레임이 아직 완성되지 않음 → 남은 데이터 보관
+          _binBuffer.removeRange(0, i);
+          _processBuffer();
+          return;
+        }
+
+        // 바이너리 프레임 로그
+        final frameLen = endIdx - i;
+        final hex = _binBuffer.sublist(i, min(i + 20, endIdx))
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join(' ');
+        fileLogger?.call('[BT] BIN-RX ${frameLen}B: [$hex...]');
+
+        i = endIdx;
+        textStart = endIdx;
+      } else {
+        i++;
+      }
+    }
+
+    // 남은 텍스트 데이터를 NMEA 버퍼에 추가
+    if (textStart < _binBuffer.length) {
+      final remaining = _binBuffer.sublist(textStart);
+      _binBuffer.clear();
+      // 마지막 바이트가 $일 수 있으므로 보관
+      if (remaining.isNotEmpty && remaining.last == 0x24) {
+        _binBuffer.addAll(remaining);
+      } else {
+        _buffer += utf8.decode(Uint8List.fromList(remaining), allowMalformed: true);
+      }
+    } else {
+      _binBuffer.clear();
+    }
+
+    _processBuffer();
   }
 
   /// NMEA 버퍼 처리
@@ -327,11 +404,11 @@ class BluetoothGnssService extends ChangeNotifier {
   }
 
   /// CHCNav RTCM 래퍼: RTCM3 데이터를 CHCNav 바이너리 프레임으로 감싸기
-  /// 테라에스 캡처 기반 정확한 프레임 형식:
+  /// 테라에스 캡처 기반 프레임 형식:
   ///   [0-1]  24 24          magic $$
   ///   [2]    01             direction (request)
   ///   [3]    seq            sequence number
-  ///   [4]    FA             RTCM 프레임 마커 (고정값)
+  ///   [4]    msgLen         메시지 길이 (Byte5 ~ 터미네이터 앞까지)
   ///   [5-6]  04 11          protocol ID
   ///   [7-14] 00 x8          zeros
   ///   [15]   01             constant
@@ -348,12 +425,14 @@ class BluetoothGnssService extends ChangeNotifier {
     final dataRegionLen = rtcmLen + 4;   // rtcmLen(2) + 00 00(2)
     final payloadLen = rtcmLen + 14;     // sub-cmd header(10) + dataRegionLen(2) + 00 00(2) + rtcmLen(2) = 14
     final seq = _chcSeq++ & 0xFF;
+    // Byte[4]: 메시지 길이 = Byte5~터미네이터 앞 = protocolID(2) + zeros(8) + 01(1) + payloadLenField(2) + payload(payloadLen)
+    final msgLen = (2 + 8 + 1 + 2 + payloadLen) & 0xFF;
 
     final frame = <int>[
       0x24, 0x24,           // [0-1] magic $$
       0x01,                 // [2] direction: request
       seq,                  // [3] sequence number
-      0xFA,                 // [4] RTCM 프레임 마커 (테라에스 동일)
+      msgLen,               // [4] 메시지 길이 (0xFA 고정값이 아닌 실제 계산값)
       0x04, 0x11,           // [5-6] protocol ID
       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [7-14] zeros
       0x01,                 // [15] constant
@@ -387,6 +466,10 @@ class BluetoothGnssService extends ChangeNotifier {
     _responseCompleter = Completer<void>();
 
     try {
+      // 초기화 명령 전체 hex dump
+      final hex = cmd.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+      fileLogger?.call('[BT-HEX] INIT#$index SENT ${cmd.length}B: $hex');
+
       _connection!.output.add(cmd);
       // 응답 대기 (타임아웃)
       await _responseCompleter!.future.timeout(
@@ -419,13 +502,20 @@ class BluetoothGnssService extends ChangeNotifier {
       }
     }
 
-    // GGA NMEA 출력 요청
-    await _sendRawCommand('LOG GPGGA ONTIME 1');
-    await _sendRawCommand('LOG GPGSA ONTIME 5');
+    // 초기화 명령의 마지막 시퀀스 번호를 추출하여 _chcSeq 동기화
+    // chcnavInitCommands는 하드코딩된 바이트이므로 _chcSeq가 증가하지 않음
+    // 마지막 명령의 Byte[3]이 시퀀스 번호
+    if (chcnavInitCommands.isNotEmpty) {
+      final lastCmd = chcnavInitCommands.last;
+      if (lastCmd.length > 3) {
+        _chcSeq = (lastCmd[3] + 1) & 0xFF;
+        fileLogger?.call('[BT] 시퀀스 동기화: 마지막 init seq=${lastCmd[3]} → 다음 _chcSeq=$_chcSeq');
+      }
+    }
 
     try {
       await _connection!.output.allSent;
-      fileLogger?.call('[BT] === i70 초기화 완료 (RTCM: ${useRawRtcm ? "RAW" : "래퍼"}) ===');
+      fileLogger?.call('[BT] === i70 초기화 완료 (RTCM: ${useRawRtcm ? "RAW" : "래퍼"}, nextSeq=$_chcSeq) ===');
     } catch (e) {
       fileLogger?.call('[BT] 초기화 flush 실패: $e');
     }
@@ -488,36 +578,21 @@ class BluetoothGnssService extends ChangeNotifier {
     }
   }
 
-  /// 원시 텍스트 명령 전송 (CR+LF 종단)
-  Future<void> _sendRawCommand(String cmd) async {
-    if (_connection == null) return;
-    try {
-      final data = Uint8List.fromList(utf8.encode('$cmd\r\n'));
-      _connection!.output.add(data);
-      debugPrint('[GNSS] RAW: $cmd');
-      fileLogger?.call('[BT] RAW: $cmd');
-      await Future.delayed(const Duration(milliseconds: 300));
-    } catch (e) {
-      fileLogger?.call('[BT] RAW 실패: $cmd → $e');
-    }
-  }
-
   // ── RTCM 전송 (CHCNav 바이너리 래퍼) ──
 
   int _rtcmBytesSent = 0;
   int _rtcmSendCount = 0;
   int _rtcmFlushErrors = 0;
-  int _rtcmFlushOk = 0;
 
   final List<int> _rtcmBuffer = [];
   Timer? _rtcmFlushTimer;
-  static const int _rtcmBufferThreshold = 256;
 
   int get rtcmBytesSent => _rtcmBytesSent;
   int get rtcmSendCount => _rtcmSendCount;
   int get rtcmFlushErrors => _rtcmFlushErrors;
 
-  /// RTCM 보정 데이터를 버퍼에 추가 (NTRIP → 버퍼 → CHCNav 래퍼 → BT → i70)
+  /// RTCM 보정 데이터 수신 → RTCM3 프레임 파싱 → 개별 CHCNav 래핑 전송
+  /// 테라에스처럼 RTCM3 프레임 단위로 개별 래핑하여 전송 (배치 X)
   void sendRtcm(Uint8List data) {
     if (_connection == null || _connectionState != GnssConnectionState.connected) {
       debugPrint('[GNSS] RTCM 전송 불가 - BT 미연결 (${_connectionState.name})');
@@ -526,75 +601,80 @@ class BluetoothGnssService extends ChangeNotifier {
     }
 
     _rtcmBuffer.addAll(data);
-
-    if (_rtcmBuffer.length >= _rtcmBufferThreshold) {
-      _flushRtcmBuffer();
-    } else {
-      _rtcmFlushTimer?.cancel();
-      _rtcmFlushTimer = Timer(const Duration(milliseconds: 100), _flushRtcmBuffer);
-    }
+    _parseAndSendRtcmFrames();
   }
 
-  /// 버퍼에 모인 RTCM을 CHCNav 바이너리 프레임으로 감싸서 BT 전송
-  void _flushRtcmBuffer() {
+  /// RTCM3 프레임(D3 헤더) 파싱 → 개별 CHCNav 래핑 전송
+  void _parseAndSendRtcmFrames() {
     _rtcmFlushTimer?.cancel();
-    if (_rtcmBuffer.isEmpty) return;
-    if (_connection == null || _connectionState != GnssConnectionState.connected) return;
 
-    final rawRtcm = Uint8List.fromList(_rtcmBuffer);
-    _rtcmBuffer.clear();
-
-    try {
-      // RTCM3 프레임 검증 (로그용)
-      final msgTypes = <int>[];
-      int offset = 0;
-      bool validFrame = false;
-      while (offset < rawRtcm.length - 4) {
-        if (rawRtcm[offset] == 0xD3) {
-          validFrame = true;
-          final len = ((rawRtcm[offset + 1] & 0x03) << 8) | rawRtcm[offset + 2];
-          if (offset + 3 + len + 3 <= rawRtcm.length) {
-            final msgType = ((rawRtcm[offset + 3] & 0xFF) << 4) | ((rawRtcm[offset + 4] & 0xF0) >> 4);
-            msgTypes.add(msgType);
-            offset += 3 + len + 3;
-            continue;
-          }
-        }
+    int offset = 0;
+    while (offset < _rtcmBuffer.length) {
+      // D3 헤더 찾기
+      if (_rtcmBuffer[offset] != 0xD3) {
         offset++;
+        continue;
       }
 
-      // RAW 또는 CHCNav 래퍼 모드로 전송
-      final Uint8List sendData;
-      if (useRawRtcm) {
-        sendData = rawRtcm;
-      } else {
-        sendData = _wrapRtcmInChcFrame(rawRtcm);
-      }
-      _connection!.output.add(sendData);
+      // 최소 6바이트 필요 (D3 + len(2) + msgType(2) + ... + CRC(3))
+      if (offset + 6 > _rtcmBuffer.length) break;
 
-      _connection!.output.allSent.then((_) {
-        _rtcmFlushOk++;
-      }).catchError((e) {
+      final rtcmLen = ((_rtcmBuffer[offset + 1] & 0x03) << 8) | _rtcmBuffer[offset + 2];
+      final frameSize = 3 + rtcmLen + 3; // header(3) + data(rtcmLen) + CRC(3)
+
+      // 프레임이 아직 완성되지 않았으면 대기
+      if (offset + frameSize > _rtcmBuffer.length) break;
+
+      // 메시지 타입 추출
+      final msgType = ((_rtcmBuffer[offset + 3] & 0xFF) << 4) |
+                       ((_rtcmBuffer[offset + 4] & 0xF0) >> 4);
+
+      // 개별 RTCM3 프레임 추출
+      final rtcmFrame = Uint8List.fromList(
+        _rtcmBuffer.sublist(offset, offset + frameSize),
+      );
+
+      try {
+        final Uint8List sentData;
+        if (useRawRtcm) {
+          sentData = rtcmFrame;
+        } else {
+          sentData = _wrapRtcmInChcFrame(rtcmFrame);
+        }
+        _connection!.output.add(sentData);
+
+        _rtcmBytesSent += rtcmFrame.length;
+        _rtcmSendCount++;
+
+        // 처음 20개는 전체 hex dump (테라에스 캡처와 비교용)
+        if (_rtcmSendCount <= 20) {
+          final fullHex = sentData.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+          fileLogger?.call('[BT-HEX] RTCM#$_rtcmSendCount type:$msgType SENT ${sentData.length}B: $fullHex');
+        } else if (_rtcmSendCount % 10 == 0) {
+          final errInfo = _rtcmFlushErrors > 0 ? ' err:$_rtcmFlushErrors' : '';
+          fileLogger?.call('[BT] RTCM#$_rtcmSendCount type:$msgType ${rtcmFrame.length}B 누적:${(_rtcmBytesSent / 1024).toStringAsFixed(1)}KB$errInfo');
+        }
+      } catch (e) {
         _rtcmFlushErrors++;
-        fileLogger?.call('[BT] RTCM flush 실패 (#$_rtcmFlushErrors): $e');
-      });
-      _rtcmBytesSent += rawRtcm.length;
-      _rtcmSendCount++;
-
-      // 로그
-      if (_rtcmSendCount <= 10 || _rtcmSendCount % 10 == 0) {
-        final hex = sendData.take(16).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-        final errInfo = _rtcmFlushErrors > 0 ? ' err:$_rtcmFlushErrors' : '';
-        final frameInfo = validFrame ? 'RTCM3' : 'raw';
-        final typeInfo = msgTypes.isNotEmpty ? ' [${msgTypes.join(",")}]' : '';
-        final msg = '[BT] #$_rtcmSendCount CHC-wrapped $frameInfo ${rawRtcm.length}B->${sendData.length}B$typeInfo '
-            'hex:[$hex] 누적:${(_rtcmBytesSent / 1024).toStringAsFixed(1)}KB$errInfo';
-        debugPrint('[GNSS] $msg');
-        fileLogger?.call(msg);
+        fileLogger?.call('[BT] RTCM 전송 실패 type:$msgType: $e');
       }
-    } catch (e) {
-      debugPrint('[GNSS] RTCM 전송 실패: $e');
-      fileLogger?.call('[BT] RTCM 전송 예외: $e');
+
+      offset += frameSize;
+    }
+
+    // 처리된 데이터 제거, 잔여 데이터 보관
+    if (offset > 0) {
+      _rtcmBuffer.removeRange(0, offset);
+    }
+
+    // 잔여 데이터가 있으면 다음 수신 시 합쳐서 처리 (타임아웃으로 폐기 방지)
+    if (_rtcmBuffer.isNotEmpty) {
+      _rtcmFlushTimer = Timer(const Duration(seconds: 2), () {
+        if (_rtcmBuffer.isNotEmpty) {
+          fileLogger?.call('[BT] RTCM 잔여 버퍼 폐기: ${_rtcmBuffer.length}B');
+          _rtcmBuffer.clear();
+        }
+      });
     }
   }
 

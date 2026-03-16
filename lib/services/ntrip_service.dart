@@ -82,8 +82,12 @@ class NtripService extends ChangeNotifier {
 
   // 파일 로그
   IOSink? _logSink;
+  IOSink? _internalLogSink;  // 앱 내부 디렉토리 백업
   String? _logFilePath;
+  String? _internalLogPath;
+  int _logLineCount = 0;
   String? get logFilePath => _logFilePath;
+  String? get internalLogPath => _internalLogPath;
 
   NtripState get state => _state;
   NtripConfig? get config => _config;
@@ -93,18 +97,16 @@ class NtripService extends ChangeNotifier {
   bool get isConnected => _state == NtripState.connected;
 
   /// 파일 로그 초기화 (앱 시작 시 호출)
+  /// Download 폴더 + 앱 내부 디렉토리 동시 저장
   Future<void> initFileLog() async {
     try {
       final dir = await getExternalStorageDirectory();
       if (dir == null) {
-        // fallback: Download 폴더 직접 접근
         final dlDir = Directory('/storage/emulated/0/Download');
         if (await dlDir.exists()) {
           _logFilePath = '${dlDir.path}/ntrip_debug.log';
         }
       } else {
-        // 외부 저장소의 상위 → Download 폴더
-        // /storage/emulated/0/Android/data/xxx/files → /storage/emulated/0/Download
         final segments = dir.path.split('/');
         final emulatedIdx = segments.indexOf('Android');
         if (emulatedIdx > 0) {
@@ -113,6 +115,19 @@ class NtripService extends ChangeNotifier {
           _logFilePath = '${dir.path}/ntrip_debug.log';
         }
       }
+
+      // 앱 내부 디렉토리에도 저장 (adb pull 가능, 삭제 안됨)
+      final appDir = await getExternalStorageDirectory();
+      if (appDir != null) {
+        final ts = DateTime.now();
+        final dateStr = '${ts.year}${ts.month.toString().padLeft(2, '0')}${ts.day.toString().padLeft(2, '0')}_${ts.hour.toString().padLeft(2, '0')}${ts.minute.toString().padLeft(2, '0')}';
+        _internalLogPath = '${appDir.path}/bt_log_$dateStr.log';
+        final internalFile = File(_internalLogPath!);
+        _internalLogSink = internalFile.openWrite(mode: FileMode.write);
+        _internalLogSink!.writeln('========== 세션 시작 ${ts.toString()} ==========');
+        debugPrint('[NTRIP] 내부 로그: $_internalLogPath');
+      }
+
       if (_logFilePath != null) {
         final file = File(_logFilePath!);
         _logSink = file.openWrite(mode: FileMode.write);
@@ -132,15 +147,32 @@ class NtripService extends ChangeNotifier {
     debugPrint('[NTRIP] $msg');
     debugLog.add(line);
     if (debugLog.length > _maxLogLines) debugLog.removeAt(0);
-    // 파일 기록
-    _logSink?.writeln(line);
+    _writeLine(line);
   }
 
   /// 외부에서 파일 로그에 기록 (BT 서비스 등)
   void logExternal(String msg) {
     final ts = DateTime.now();
     final line = '[${ts.hour.toString().padLeft(2,'0')}:${ts.minute.toString().padLeft(2,'0')}:${ts.second.toString().padLeft(2,'0')}] $msg';
+    _writeLine(line);
+  }
+
+  /// 양쪽 로그 파일에 기록 + 주기적 flush
+  void _writeLine(String line) {
     _logSink?.writeln(line);
+    _internalLogSink?.writeln(line);
+    _logLineCount++;
+    // 100줄마다 flush (hex dump가 많으므로)
+    if (_logLineCount % 100 == 0) {
+      _logSink?.flush();
+      _internalLogSink?.flush();
+    }
+  }
+
+  /// 로그 flush (공유 전 호출)
+  Future<void> flushLog() async {
+    await _logSink?.flush();
+    await _internalLogSink?.flush();
   }
 
   Future<void> loadConfig() async {
@@ -639,6 +671,8 @@ class NtripService extends ChangeNotifier {
     _log('세션 종료');
     _logSink?.flush().then((_) => _logSink?.close());
     _logSink = null;
+    _internalLogSink?.flush().then((_) => _internalLogSink?.close());
+    _internalLogSink = null;
     disconnect();
     super.dispose();
   }

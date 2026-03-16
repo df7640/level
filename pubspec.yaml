@@ -63,7 +63,7 @@ dependencies:
   flutter_bluetooth_serial: ^0.4.0
 
   # 공유 (카카오톡 등)
-  share_plus: ^10.0.0
+  share_plus: ^7.0.0
 
   # 런타임 권한 요청
   permission_handler: ^11.3.0
