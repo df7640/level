@@ -354,7 +354,6 @@ class BluetoothGnssService extends ChangeNotifier {
   /// CHCNav 바이너리 명령 프레임 생성
   /// 형식: $$ 01 [seq] [len] 04 11 [00x8] 01 [payloadLen:2] [payload] 09 24 0D 0A
   Uint8List _buildChcCommand(List<int> payload) {
-    final totalSize = 18 + payload.length + 4; // header(18) + payload + terminator(4)
     final payloadLen = payload.length;
     final seq = _chcSeq++ & 0xFF;
 
@@ -362,7 +361,7 @@ class BluetoothGnssService extends ChangeNotifier {
       0x24, 0x24,           // magic $$
       0x01,                 // direction: request (tablet → i70)
       seq,                  // sequence number
-      (totalSize - 7) & 0xFF, // length field
+      ((payloadLen + 19) < 0xFA ? (payloadLen + 19) : 0xFA), // length field: min(payloadLen+19, 0xFA)
       0x04, 0x11,           // protocol ID
       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 8 zero bytes
       0x01,                 // constant
@@ -425,8 +424,8 @@ class BluetoothGnssService extends ChangeNotifier {
     final dataRegionLen = rtcmLen + 4;   // rtcmLen(2) + 00 00(2)
     final payloadLen = rtcmLen + 14;     // sub-cmd header(10) + dataRegionLen(2) + 00 00(2) + rtcmLen(2) = 14
     final seq = _chcSeq++ & 0xFF;
-    // Byte[4]: 메시지 길이 = Byte5~터미네이터 앞 = protocolID(2) + zeros(8) + 01(1) + payloadLenField(2) + payload(payloadLen)
-    final msgLen = (2 + 8 + 1 + 2 + payloadLen) & 0xFF;
+    // Byte[4]: min(payloadLen + 19, 0xFA) — 테라에스 캡처에서 역산한 공식
+    final msgLen = (payloadLen + 19) < 0xFA ? (payloadLen + 19) : 0xFA;
 
     final frame = <int>[
       0x24, 0x24,           // [0-1] magic $$
