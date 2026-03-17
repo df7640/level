@@ -203,7 +203,7 @@ class NtripService extends ChangeNotifier {
         final request = 'GET / HTTP/1.1\r\n'
             'Host: $host\r\n'
             'Ntrip-Version: Ntrip/2.0\r\n'
-            'User-Agent: NTRIP LongitudinalViewer/1.0\r\n'
+            'User-Agent: NTRIP CHC_LandStar/1.0\r\n'
             'Authorization: Basic $credentials\r\n'
             '\r\n';
         socket.add(utf8.encode(request));
@@ -324,13 +324,14 @@ class NtripService extends ChangeNotifier {
       final request = 'GET /${config.mountPoint} HTTP/1.1\r\n'
           'Host: $connectedHost\r\n'
           'Ntrip-Version: Ntrip/2.0\r\n'
-          'User-Agent: NTRIP LongitudinalViewer/1.0\r\n'
+          'User-Agent: NTRIP CHC_LandStar/1.0\r\n'
           'Authorization: Basic $credentials\r\n'
           'Accept: */*\r\n'
           '\r\n';
 
       _socket!.add(utf8.encode(request));
       _log('HTTP 요청 전송 완료');
+      _log('요청: GET /${config.mountPoint} Auth=${credentials.substring(0, 8)}...');
 
       bool headerParsed = false;
       final headerBuffer = <int>[];
@@ -348,6 +349,10 @@ class NtripService extends ChangeNotifier {
                 ? headerStr.substring(0, firstLineEnd).trim()
                 : headerStr.trim();
             _log('첫 응답줄: "$firstLine"');
+            // 401 디버깅: 전체 응답 헤더 로그
+            if (firstLine.contains('401') || firstLine.contains('403')) {
+              _log('전체 응답: $headerStr');
+            }
 
             // NTRIP 1.0 (ICY 200 OK) vs NTRIP 2.0 (HTTP/1.1 200 OK)
             final isNtrip1Ok = firstLine.contains('ICY 200');
@@ -420,6 +425,10 @@ class NtripService extends ChangeNotifier {
               }
             }
           } else {
+            // 데이터 수신 로그 (처음 10회)
+            if (_rtcmPacketCount < 10 || _rtcmPacketCount % 50 == 0) {
+              _log('소켓 데이터 ${data.length}B (chunked=$_isChunked, total=${_bytesReceived}B, packets=$_rtcmPacketCount)');
+            }
             if (_isChunked) {
               _handleChunkedData(data);
             } else {
@@ -608,7 +617,7 @@ class NtripService extends ChangeNotifier {
   void _sendGga() {
     if (_socket == null || _state != NtripState.connected) return;
     if (_lastGga == null || _lastGga!.isEmpty) {
-      if (_ggaSendCount % 5 == 0) _log('GGA 미수신 - GPS 연결 확인 필요');
+      _log('GGA 미수신 - GPS 연결 확인 필요 (count=$_ggaSendCount)');
       _ggaSendCount++;
       return;
     }
@@ -616,8 +625,8 @@ class NtripService extends ChangeNotifier {
       _socket!.add(utf8.encode('${_lastGga!}\r\n'));
       _ggaSendCount++;
 
-      // 5초에 한 번만 로그 (1초 전송이지만 로그 과다 방지)
-      if (_ggaSendCount % 5 == 0) {
+      // 처음 5회는 매번 로그, 이후 5초마다
+      if (_ggaSendCount <= 5 || _ggaSendCount % 5 == 0) {
         final parts = _lastGga!.split(',');
         final fixQ = parts.length > 6 ? parts[6] : '?';
         final sats = parts.length > 7 ? parts[7] : '?';

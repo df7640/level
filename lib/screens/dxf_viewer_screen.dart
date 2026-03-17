@@ -232,6 +232,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     _gnssService.fileLogger = (msg) => _ntripService.logExternal(msg);
     // NTRIP RTCM → 블루투스 수신기로 전달
     _ntripService.onRtcmData = (data) {
+      debugPrint('[RTCM-RELAY] NTRIP→BT ${data.length}B');
       _gnssService.sendRtcm(data);
     };
   }
@@ -292,6 +293,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     // NTRIP에 GGA 전송 (VRS 보정 기준점)
     if (_ntripService.isConnected && _gnssService.lastGga != null) {
       _ntripService.updateGga(_gnssService.lastGga!);
+    } else if (_ntripService.isConnected && _gnssService.lastGga == null) {
+      debugPrint('[GGA-FWD] NTRIP연결중이나 GGA null');
     }
 
     // 측설 거리/비프 업데이트
@@ -1368,13 +1371,13 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     }
   }
 
-  /// GPS 연결 후 i70 내부 NTRIP 클라이언트 자동 설정
+  /// GPS 연결 후 NTRIP 자동 연결 (5초 후)
   void _autoConnectNtrip() {
-    debugPrint('[AUTO-NTRIP] 3초 후 i70 내부 NTRIP 설정 예약');
-    Future.delayed(const Duration(seconds: 3), () async {
+    debugPrint('[AUTO-NTRIP] 5초 후 NTRIP 연결 예약');
+    Future.delayed(const Duration(seconds: 5), () async {
       if (!mounted) return;
       if (_gnssService.connectionState != GnssConnectionState.connected) {
-        debugPrint('[AUTO-NTRIP] BT 미연결 - 5초 후 재시도');
+        debugPrint('[AUTO-NTRIP] BT 미연결 - 재시도');
         Future.delayed(const Duration(seconds: 5), () {
           if (mounted && _gnssService.connectionState == GnssConnectionState.connected) {
             _autoConnectNtrip();
@@ -1383,7 +1386,6 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         return;
       }
 
-      // 저장된 설정 또는 기본값 사용
       var config = _ntripService.config;
       if (config == null || config.username.isEmpty) {
         config = const NtripConfig(
@@ -1396,18 +1398,8 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
         await config.save();
       }
 
-      // i70 내부 NTRIP 클라이언트 설정 (수신기가 직접 서버 접속)
-      _gnssService.configureReceiverNtrip(
-        host: config.host,
-        port: config.port,
-        mountPoint: config.mountPoint,
-        username: config.username,
-        password: config.password,
-      );
-      _showStatusMessage('i70 NTRIP 설정 전송 중...', Colors.orange);
-
-      // 앱 자체 NTRIP도 병행 연결 (RTCM 릴레이 폴백)
       _ntripService.connect(config);
+      _showStatusMessage('NTRIP 연결 중...', Colors.cyanAccent);
     });
   }
 

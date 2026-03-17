@@ -74,7 +74,7 @@ class BluetoothGnssService extends ChangeNotifier {
   String? _lastGga;
   int _ggaCount = 0;
 
-  // CHCNav 바이너리 프로토콜 시퀀스 번호
+  // CHCNav RTCM 래퍼용 시퀀스 번호 (초기화 후 동기화)
   int _chcSeq = 0;
 
   // RTCM 전송 모드: true=RAW, false=CHCNav 래퍼
@@ -132,8 +132,6 @@ class BluetoothGnssService extends ChangeNotifier {
             final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
             fileLogger?.call('[BT-HEX] RX#$rxCount ${data.length}B: $hex');
           }
-          // i70에서 데이터 수신 → 초기화 명령 응답 대기 해제
-          _onBinaryResponse();
           // 디버그 모드일 때 바이너리 메시지 감지
           if (_isDebugQuerying) {
             _detectBinaryResponses(data);
@@ -351,171 +349,99 @@ class BluetoothGnssService extends ChangeNotifier {
 
   // ── CHCNav 바이너리 프로토콜 ──
 
-  /// CHCNav 바이너리 명령 프레임 생성
-  /// 형식: $$ 01 [seq] [len] 04 11 [00x8] 01 [payloadLen:2] [payload] 09 24 0D 0A
-  Uint8List _buildChcCommand(List<int> payload) {
-    final totalSize = 18 + payload.length + 4; // header(18) + payload + terminator(4)
-    final payloadLen = payload.length;
-    final seq = _chcSeq++ & 0xFF;
-
-    final frame = <int>[
-      0x24, 0x24,           // magic $$
-      0x01,                 // direction: request (tablet → i70)
-      seq,                  // sequence number
-      (totalSize - 7) & 0xFF, // length field
-      0x04, 0x11,           // protocol ID
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 8 zero bytes
-      0x01,                 // constant
-      (payloadLen >> 8) & 0xFF, payloadLen & 0xFF, // payload length (BE)
-      ...payload,
-      0x09, 0x24, 0x0D, 0x0A, // terminator
-    ];
-
-    return Uint8List.fromList(frame);
-  }
-
-  /// CHCNav 설정 명령 생성 (파라미터 ID + 값 설정)
-  Uint8List _buildChcSetCommand(int paramHi, int paramLo, int valueHi, int valueLo) {
-    final payload = [
-      0x00, 0x01, 0x00, 0x02, // constants
-      0x00, 0x0A,             // sub-command: set parameter
-      paramHi, paramLo,       // parameter ID
-      0x00, 0x02,             // value length
-      valueHi, valueLo,       // value
-      0x00, 0x00,             // padding
-    ];
-    return _buildChcCommand(payload);
-  }
-
-  /// CHCNav 바이너리 프레임 직접 전송
-  Future<void> _sendChcBinary(Uint8List frame, String desc) async {
-    if (_connection == null) return;
-    try {
-      _connection!.output.add(frame);
-      final hex = frame.take(min(24, frame.length))
-          .map((b) => b.toRadixString(16).padLeft(2, '0'))
-          .join(' ');
-      debugPrint('[GNSS] CHC: $desc [$hex...]');
-      fileLogger?.call('[BT] CHC: $desc (${frame.length}B)');
-      await Future.delayed(const Duration(milliseconds: 300));
-    } catch (e) {
-      fileLogger?.call('[BT] CHC 실패: $desc → $e');
-    }
-  }
-
   /// CHCNav RTCM 래퍼: RTCM3 데이터를 CHCNav 바이너리 프레임으로 감싸기
-  /// 테라에스 캡처 기반 프레임 형식:
-  ///   [0-1]  24 24          magic $$
-  ///   [2]    01             direction (request)
-  ///   [3]    seq            sequence number
-  ///   [4]    msgLen         메시지 길이 (Byte5 ~ 터미네이터 앞까지)
-  ///   [5-6]  04 11          protocol ID
-  ///   [7-14] 00 x8          zeros
-  ///   [15]   01             constant
-  ///   [16-17] payloadLen    (BE) = rtcmLen + 14
-  ///   [18-21] 00 01 00 02   constants
-  ///   [22-25] 00 32 15 04   sub-command: RTCM relay
-  ///   [26-27] dataRegionLen (BE) = rtcmLen + 4
-  ///   [28-29] 00 00         padding
-  ///   [30-31] rtcmLen       (BE) = RTCM 데이터 길이
-  ///   [32+]  RTCM data      raw RTCM3 data (D3...)
-  ///   [last4] 09 24 0D 0A   terminator
+  /// 2026-03-16 btsnoop 캡처 기반 프레임 형식:
+  ///   [0-1]  24 24              magic $$
+  ///   [2]    01                 direction (request)
+  ///   [3]    seq                sequence number
+  ///   [4]    min(total-7,0xFA)  length field
+  ///   [5-6]  04 11              protocol ID
+  ///   [7-14] 00 x8              zeros
+  ///   [15]   01                 constant
+  ///   [16-17] inner_len (BE)    = 14 + rtcm_frame_length
+  ///   [18-21] 00 01 00 02       constants
+  ///   [22-25] 00 32 15 04       sub-command: RTCM relay
+  ///   [26-27] block_len (BE)    = rtcm_frame_length + 4
+  ///   [28-29] 00 00             padding
+  ///   [30-31] rtcm_frame_len    (BE)
+  ///   [32+]  RTCM frame data
+  ///   [+0]   00 00 00 00        4 trailing bytes
+  ///   [last4] 09 24 0D 0A       terminator
   Uint8List _wrapRtcmInChcFrame(Uint8List rtcmData) {
     final rtcmLen = rtcmData.length;
-    final dataRegionLen = rtcmLen + 4;   // rtcmLen(2) + 00 00(2)
-    final payloadLen = rtcmLen + 14;     // sub-cmd header(10) + dataRegionLen(2) + 00 00(2) + rtcmLen(2) = 14
+    final innerLen = 14 + rtcmLen;         // from byte[22] to before terminator
+    final blockLen = rtcmLen + 4;          // rtcm_frame_len(2) + 00 00(padding before rtcm) ← actually block includes rtcm + 4 trailing
+    final total = 40 + rtcmLen;            // full frame size
     final seq = _chcSeq++ & 0xFF;
-    // Byte[4]: 메시지 길이 = Byte5~터미네이터 앞 = protocolID(2) + zeros(8) + 01(1) + payloadLenField(2) + payload(payloadLen)
-    final msgLen = (2 + 8 + 1 + 2 + payloadLen) & 0xFF;
+    final lenField = min(total - 7, 0xFA); // byte[4]
 
     final frame = <int>[
       0x24, 0x24,           // [0-1] magic $$
       0x01,                 // [2] direction: request
       seq,                  // [3] sequence number
-      msgLen,               // [4] 메시지 길이 (0xFA 고정값이 아닌 실제 계산값)
+      lenField,             // [4] length field = min(total-7, 0xFA)
       0x04, 0x11,           // [5-6] protocol ID
       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [7-14] zeros
       0x01,                 // [15] constant
-      (payloadLen >> 8) & 0xFF, payloadLen & 0xFF, // [16-17] payload length (BE)
+      (innerLen >> 8) & 0xFF, innerLen & 0xFF, // [16-17] inner_len (BE)
       0x00, 0x01, 0x00, 0x02, // [18-21] constants
       0x00, 0x32, 0x15, 0x04, // [22-25] sub-command: RTCM relay
-      (dataRegionLen >> 8) & 0xFF, dataRegionLen & 0xFF, // [26-27] data region length (BE)
+      (blockLen >> 8) & 0xFF, blockLen & 0xFF, // [26-27] block_len (BE)
       0x00, 0x00,             // [28-29] padding
-      (rtcmLen >> 8) & 0xFF, rtcmLen & 0xFF, // [30-31] RTCM length (BE)
+      (rtcmLen >> 8) & 0xFF, rtcmLen & 0xFF, // [30-31] RTCM frame length (BE)
       ...rtcmData,            // [32+] raw RTCM3 data
+      0x00, 0x00, 0x00, 0x00, // 4 trailing bytes
       0x09, 0x24, 0x0D, 0x0A, // terminator
     ];
 
     return Uint8List.fromList(frame);
   }
 
-  // 응답 대기용 Completer
-  Completer<void>? _responseCompleter;
-
-  /// i70로부터 바이너리 응답 수신 시 호출 (응답 대기 해제)
-  void _onBinaryResponse() {
-    if (_responseCompleter != null && !_responseCompleter!.isCompleted) {
-      _responseCompleter!.complete();
-    }
-  }
-
-  /// 바이너리 명령 전송 후 응답 대기 (타임아웃 포함)
-  Future<void> _sendAndWaitResponse(Uint8List cmd, int index, {int timeoutMs = 500}) async {
-    if (_connection == null) return;
-
-    _responseCompleter = Completer<void>();
-
-    try {
-      // 초기화 명령 전체 hex dump
-      final hex = cmd.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-      fileLogger?.call('[BT-HEX] INIT#$index SENT ${cmd.length}B: $hex');
-
-      _connection!.output.add(cmd);
-      // 응답 대기 (타임아웃)
-      await _responseCompleter!.future.timeout(
-        Duration(milliseconds: timeoutMs),
-        onTimeout: () {
-          // 타임아웃 — 무시하고 진행
-        },
-      );
-    } catch (e) {
-      fileLogger?.call('[BT] 초기화 #$index 전송 실패: $e');
-    }
-    _responseCompleter = null;
-  }
-
-  /// BT 연결 직후 초기화 — 테라에스 캡처 시퀀스 재생 (응답 대기 포함)
+  /// BT 연결 직후 초기화 — btsnoop 캡처 시퀀스 재생 (50ms 간격, 응답 대기 없음)
+  /// TerraStar 타이밍: ~50ms 간격으로 fire-and-forget
+  /// 시퀀스 번호는 캡처 데이터 그대로 사용 (재번호 없음)
   Future<void> _sendInitCommands() async {
     if (_connection == null) return;
 
-    fileLogger?.call('[BT] === i70 테라에스 초기화 시작 (${chcnavInitCommands.length}개, 응답대기) ===');
+    final cmds = ChcnavInitData.initCommands;
+    fileLogger?.call('[BT] === i70 초기화 시작 (${cmds.length}개, 50ms간격, 응답대기없음) ===');
 
-    for (int i = 0; i < chcnavInitCommands.length; i++) {
+    for (int i = 0; i < cmds.length; i++) {
       if (_connection == null || _connectionState != GnssConnectionState.connected) break;
-      final cmd = Uint8List.fromList(chcnavInitCommands[i]);
+      final cmd = Uint8List.fromList(cmds[i]);
       final seq = cmd.length > 3 ? cmd[3] : i;
 
-      await _sendAndWaitResponse(cmd, i + 1);
+      try {
+        _connection!.output.add(cmd);
 
-      if (i < 5 || i % 10 == 0 || i >= chcnavInitCommands.length - 3) {
-        fileLogger?.call('[BT] 초기화 #${i + 1}/${chcnavInitCommands.length} seq=0x${seq.toRadixString(16)} (${cmd.length}B) 완료');
+        // 처음 5개와 마지막 3개는 hex dump 로그
+        if (i < 5 || i >= cmds.length - 3) {
+          final hex = cmd.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+          fileLogger?.call('[BT-HEX] INIT#$i seq=0x${seq.toRadixString(16)} SENT ${cmd.length}B: $hex');
+        } else if (i % 10 == 0) {
+          fileLogger?.call('[BT] INIT#$i/${cmds.length} seq=0x${seq.toRadixString(16)} (${cmd.length}B)');
+        }
+      } catch (e) {
+        fileLogger?.call('[BT] 초기화 #$i 전송 실패: $e');
       }
+
+      // TerraStar 타이밍: 50ms 간격
+      await Future.delayed(const Duration(milliseconds: 50));
     }
 
     // 초기화 명령의 마지막 시퀀스 번호를 추출하여 _chcSeq 동기화
-    // chcnavInitCommands는 하드코딩된 바이트이므로 _chcSeq가 증가하지 않음
     // 마지막 명령의 Byte[3]이 시퀀스 번호
-    if (chcnavInitCommands.isNotEmpty) {
-      final lastCmd = chcnavInitCommands.last;
+    if (cmds.isNotEmpty) {
+      final lastCmd = cmds.last;
       if (lastCmd.length > 3) {
         _chcSeq = (lastCmd[3] + 1) & 0xFF;
-        fileLogger?.call('[BT] 시퀀스 동기화: 마지막 init seq=${lastCmd[3]} → 다음 _chcSeq=$_chcSeq');
+        fileLogger?.call('[BT] 시퀀스 동기화: 마지막 init seq=0x${lastCmd[3].toRadixString(16)} → 다음 _chcSeq=0x${_chcSeq.toRadixString(16)}');
       }
     }
 
     try {
       await _connection!.output.allSent;
-      fileLogger?.call('[BT] === i70 초기화 완료 (RTCM: ${useRawRtcm ? "RAW" : "래퍼"}, nextSeq=$_chcSeq) ===');
+      fileLogger?.call('[BT] === i70 초기화 완료 (${cmds.length}개, RTCM: ${useRawRtcm ? "RAW" : "래퍼"}, nextSeq=0x${_chcSeq.toRadixString(16)}) ===');
     } catch (e) {
       fileLogger?.call('[BT] 초기화 flush 실패: $e');
     }
