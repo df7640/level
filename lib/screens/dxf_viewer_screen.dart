@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/dimension_data.dart';
 import '../models/station_data.dart';
 import '../services/bluetooth_gnss_service.dart';
+import '../services/chcnav_init_data.dart';
 import '../services/dxf_service.dart';
 import '../services/ntrip_service.dart';
 import '../services/snap_service.dart';
@@ -528,27 +529,51 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   ),
                 ),
               ),
-              // GPS 연결 (CHCNav 래퍼)
+              // GPS 연결 (init59)
               if (!isConnected && !isConnecting)
                 ListTile(
                   leading: const Icon(Icons.bluetooth_searching, color: Colors.blue),
-                  title: const Text('GPS 연결 (래퍼)', style: TextStyle(color: Colors.white)),
-                  subtitle: const Text('테라에스 초기화 + RTCM 래퍼', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  title: const Text('GPS 59개', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('btsnoop 59개 고유 명령', style: TextStyle(color: Colors.white38, fontSize: 12)),
                   onTap: () {
                     Navigator.pop(ctx);
-                    _gnssService.useRawRtcm = false;
+                    _gnssService.initMode = InitMode.init59;
                     _connectGps();
                   },
                 ),
-              // GPS 연결 (RAW RTCM)
+              // GPS 연결 (init29)
+              if (!isConnected && !isConnecting)
+                ListTile(
+                  leading: const Icon(Icons.bluetooth_searching, color: Colors.green),
+                  title: const Text('GPS 29개', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('원본 29개 명령', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _gnssService.initMode = InitMode.init29;
+                    _connectGps();
+                  },
+                ),
+              // GPS 연결 (init25)
               if (!isConnected && !isConnecting)
                 ListTile(
                   leading: const Icon(Icons.bluetooth_searching, color: Colors.orange),
-                  title: const Text('GPS 연결 (RAW)', style: TextStyle(color: Colors.white)),
-                  subtitle: const Text('테라에스 초기화 + RAW RTCM', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  title: const Text('GPS 25개', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('IN_DART 매칭 25개', style: TextStyle(color: Colors.white38, fontSize: 12)),
                   onTap: () {
                     Navigator.pop(ctx);
-                    _gnssService.useRawRtcm = true;
+                    _gnssService.initMode = InitMode.init25;
+                    _connectGps();
+                  },
+                ),
+              // GPS 연결 (init99)
+              if (!isConnected && !isConnecting)
+                ListTile(
+                  leading: const Icon(Icons.bluetooth_searching, color: Colors.purple),
+                  title: const Text('GPS 99개', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('59개 + 고빈도 폴링 반복', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _gnssService.initMode = InitMode.init99;
                     _connectGps();
                   },
                 ),
@@ -633,17 +658,6 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                 },
               ),
               const Divider(color: Colors.white24),
-              // 디버그 연결 (초기화 없이)
-              if (!isConnected && !isConnecting)
-                ListTile(
-                  leading: const Icon(Icons.developer_mode, color: Colors.amber),
-                  title: const Text('디버그 연결 (초기화 없이)', style: TextStyle(color: Colors.white)),
-                  subtitle: const Text('테라에스 설정 유지한 채 연결', style: TextStyle(color: Colors.white38, fontSize: 12)),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _connectGpsDebug();
-                  },
-                ),
               // 수신기 명령 전송
               if (isConnected)
                 ListTile(
@@ -1019,23 +1033,6 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     );
   }
 
-  /// 디버그 연결 (초기화 명령 없이)
-  void _connectGpsDebug() async {
-    final btConnect = await Permission.bluetoothConnect.request();
-    final btScan = await Permission.bluetoothScan.request();
-    final location = await Permission.locationWhenInUse.request();
-
-    if (btConnect.isGranted && btScan.isGranted && location.isGranted) {
-      _showBluetoothDeviceDialog(skipInit: true);
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('블루투스 및 위치 권한이 필요합니다.')),
-        );
-      }
-    }
-  }
-
   /// 수신기 명령 전송 다이얼로그
   void _showReceiverCommandDialog() {
     final cmdCtrl = TextEditingController();
@@ -1403,7 +1400,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     });
   }
 
-  Future<void> _showBluetoothDeviceDialog({bool skipInit = false}) async {
+  Future<void> _showBluetoothDeviceDialog() async {
     final devices = await _gnssService.getPairedDevices();
 
     if (!mounted) return;
@@ -1452,13 +1449,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                       ),
                       onTap: () {
                         Navigator.pop(ctx);
-                        _gnssService.connect(device, skipInit: skipInit);
-                        if (!skipInit) {
-                          // GPS 연결 후 NTRIP 자동 연결
-                          _autoConnectNtrip();
-                        } else {
-                          _showStatusMessage('디버그 연결 (초기화 생략)', Colors.amber);
-                        }
+                        _gnssService.connect(device);
+                        // GPS 연결 후 NTRIP 자동 연결
+                        _autoConnectNtrip();
                       },
                     )),
               const SizedBox(height: 8),

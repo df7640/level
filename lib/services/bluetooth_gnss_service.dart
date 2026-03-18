@@ -77,8 +77,8 @@ class BluetoothGnssService extends ChangeNotifier {
   // CHCNav RTCM 래퍼용 시퀀스 번호 (초기화 후 동기화)
   int _chcSeq = 0;
 
-  // RTCM 전송 모드: true=RAW, false=CHCNav 래퍼
-  bool useRawRtcm = false;
+  // 초기화 명령 모드
+  InitMode initMode = InitMode.init59;
 
   GnssConnectionState get connectionState => _connectionState;
   String? get deviceName => _deviceName;
@@ -99,8 +99,7 @@ class BluetoothGnssService extends ChangeNotifier {
   }
 
   /// 블루투스 기기에 연결
-  /// [skipInit] true이면 초기화 명령 없이 연결만 (테라에스 설정 유지 테스트용)
-  Future<void> connect(BluetoothDevice device, {bool skipInit = false}) async {
+  Future<void> connect(BluetoothDevice device) async {
     _connectionState = GnssConnectionState.connecting;
     _deviceName = device.name ?? device.address;
     _chcSeq = 0;
@@ -111,15 +110,11 @@ class BluetoothGnssService extends ChangeNotifier {
       _connectionState = GnssConnectionState.connected;
       notifyListeners();
 
-      debugPrint('[GNSS] 연결됨: $_deviceName (skipInit=$skipInit)');
-      fileLogger?.call('[BT] 연결됨: $_deviceName (${device.address}) skipInit=$skipInit');
+      debugPrint('[GNSS] 연결됨: $_deviceName (initMode=${initMode.name})');
+      fileLogger?.call('[BT] 연결됨: $_deviceName (${device.address}) initMode=${initMode.name}');
 
-      // 초기화 명령 전송 (skipInit=false일 때만)
-      if (!skipInit) {
-        await _sendInitCommands();
-      } else {
-        fileLogger?.call('[BT] === 초기화 생략 (테라에스 설정 유지) ===');
-      }
+      // 초기화 명령 전송
+      await _sendInitCommands();
 
       // 수신 패킷 카운터 (hex dump 로그용)
       int rxCount = 0;
@@ -403,8 +398,8 @@ class BluetoothGnssService extends ChangeNotifier {
   Future<void> _sendInitCommands() async {
     if (_connection == null) return;
 
-    final cmds = ChcnavInitData.initCommands;
-    fileLogger?.call('[BT] === i70 초기화 시작 (${cmds.length}개, 50ms간격, 응답대기없음) ===');
+    final cmds = ChcnavInitData.getCommands(initMode);
+    fileLogger?.call('[BT] === i70 초기화 시작 (${initMode.name}: ${cmds.length}개, 50ms간격, 응답대기없음) ===');
 
     for (int i = 0; i < cmds.length; i++) {
       if (_connection == null || _connectionState != GnssConnectionState.connected) break;
@@ -441,7 +436,7 @@ class BluetoothGnssService extends ChangeNotifier {
 
     try {
       await _connection!.output.allSent;
-      fileLogger?.call('[BT] === i70 초기화 완료 (${cmds.length}개, RTCM: ${useRawRtcm ? "RAW" : "래퍼"}, nextSeq=0x${_chcSeq.toRadixString(16)}) ===');
+      fileLogger?.call('[BT] === i70 초기화 완료 (${initMode.name}: ${cmds.length}개, nextSeq=0x${_chcSeq.toRadixString(16)}) ===');
     } catch (e) {
       fileLogger?.call('[BT] 초기화 flush 실패: $e');
     }
@@ -561,12 +556,7 @@ class BluetoothGnssService extends ChangeNotifier {
       );
 
       try {
-        final Uint8List sentData;
-        if (useRawRtcm) {
-          sentData = rtcmFrame;
-        } else {
-          sentData = _wrapRtcmInChcFrame(rtcmFrame);
-        }
+        final sentData = _wrapRtcmInChcFrame(rtcmFrame);
         _connection!.output.add(sentData);
 
         _rtcmBytesSent += rtcmFrame.length;
