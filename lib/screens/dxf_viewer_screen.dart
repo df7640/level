@@ -642,6 +642,15 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   _showNtripLogDialog();
                 },
               ),
+              // GPS/BT 로그 보기
+              ListTile(
+                leading: const Icon(Icons.description, color: Colors.white54),
+                title: const Text('GPS/BT 로그', style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showGpsLogDialog();
+                },
+              ),
               // BT/NTRIP 로그 파일 공유
               ListTile(
                 leading: const Icon(Icons.share, color: Colors.white54),
@@ -901,6 +910,55 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     mountCtrl.dispose();
     userCtrl.dispose();
     passCtrl.dispose();
+  }
+
+  /// GPS/BT 로그 다이얼로그 (내부 로그 파일 읽기)
+  void _showGpsLogDialog() async {
+    final path = _ntripService.internalLogPath;
+    String content = '로그 파일이 없습니다.';
+    if (path != null) {
+      final file = File(path);
+      if (await file.exists()) {
+        await _ntripService.flushLog();
+        final lines = await file.readAsLines();
+        // BT 관련 라인만 필터 + 최근 200줄
+        final btLines = lines.where((l) => l.contains('[BT') || l.contains('INIT') || l.contains('연결') || l.contains('오류') || l.contains('실패') || l.contains('GGA')).toList();
+        final show = btLines.length > 200 ? btLines.sublist(btLines.length - 200) : btLines;
+        content = show.join('\n');
+        if (content.isEmpty) content = '(BT 로그 없음, 전체 ${lines.length}줄)';
+      }
+    }
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.grey[900],
+        title: Row(children: [
+          const Expanded(child: Text('GPS/BT 로그', style: TextStyle(color: Colors.white, fontSize: 14))),
+          IconButton(
+            icon: const Icon(Icons.copy, color: Colors.cyanAccent, size: 20),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: content));
+              _showStatusMessage('복사됨', Colors.greenAccent);
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.share, color: Colors.cyanAccent, size: 20),
+            onPressed: () => _shareLogFile(),
+          ),
+        ]),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 400,
+          child: SingleChildScrollView(
+            child: Text(content, style: const TextStyle(color: Colors.white70, fontSize: 10, fontFamily: 'monospace')),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('닫기')),
+        ],
+      ),
+    );
   }
 
   /// NTRIP 디버그 로그 다이얼로그

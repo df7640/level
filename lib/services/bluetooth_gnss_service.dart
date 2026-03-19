@@ -106,6 +106,7 @@ class BluetoothGnssService extends ChangeNotifier {
     notifyListeners();
 
     try {
+      fileLogger?.call('[BT] 연결 시도: $_deviceName (${device.address})');
       _connection = await BluetoothConnection.toAddress(device.address);
       _connectionState = GnssConnectionState.connected;
       notifyListeners();
@@ -113,12 +114,10 @@ class BluetoothGnssService extends ChangeNotifier {
       debugPrint('[GNSS] 연결됨: $_deviceName (initMode=${initMode.name})');
       fileLogger?.call('[BT] 연결됨: $_deviceName (${device.address}) initMode=${initMode.name}');
 
-      // 초기화 명령 전송
-      await _sendInitCommands();
-
       // 수신 패킷 카운터 (hex dump 로그용)
       int rxCount = 0;
 
+      // 먼저 listen 등록 (초기화 응답을 받을 수 있도록)
       _connection!.input!.listen(
         (Uint8List data) {
           rxCount++;
@@ -148,6 +147,10 @@ class BluetoothGnssService extends ChangeNotifier {
           notifyListeners();
         },
       );
+
+      // listen 등록 후 초기화 명령 전송 (응답을 받을 수 있도록)
+      await _sendInitCommands();
+
     } catch (e) {
       debugPrint('[GNSS] 연결 실패: $e');
       fileLogger?.call('[BT] 연결 실패: $e');

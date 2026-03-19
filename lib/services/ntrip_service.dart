@@ -275,13 +275,14 @@ class NtripService extends ChangeNotifier {
 
   /// NTRIP 서버 연결
   Future<void> connect(NtripConfig config) async {
-    if (_state == NtripState.connecting || _state == NtripState.connected) {
-      await disconnect();
-    }
+    // 이전 연결 강제 정리
+    _reconnectTimer?.cancel();
+    _stopGgaSender();
+    try { _socket?.destroy(); } catch (_) {}
+    _socket = null;
 
     _config = config;
     _shouldAutoReconnect = true;
-    _reconnectTimer?.cancel();
     _state = NtripState.connecting;
     _errorMessage = null;
     _bytesReceived = 0;
