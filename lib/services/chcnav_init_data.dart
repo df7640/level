@@ -1,5 +1,5 @@
 /// CHCNav i70 초기화 명령 모드
-enum InitMode { init59, init29, init25, init99 }
+enum InitMode { init59, init29, init25, init99, skipInit }
 
 /// CHCNav i70 초기화 명령 데이터
 /// 4가지 초기화 모드 지원:
@@ -18,6 +18,8 @@ class ChcnavInitData {
         return _init25;
       case InitMode.init99:
         return _buildInit99();
+      case InitMode.skipInit:
+        return [];
     }
   }
 

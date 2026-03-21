@@ -78,7 +78,35 @@ class BluetoothGnssService extends ChangeNotifier {
   int _chcSeq = 0;
 
   // 초기화 명령 모드
-  InitMode initMode = InitMode.init59;
+  InitMode initMode = InitMode.init29;
+
+  // 초기화 중 응답 수신 플래그
+  bool _initResponseReceived = false;
+  int _rtcmCrcErrors = 0;
+
+  /// RTCM3 CRC24Q 검증
+  bool _verifyCrc24q(Uint8List frame) {
+    if (frame.length < 6) return false;
+    final len = ((frame[1] & 0x03) << 8) | frame[2];
+    if (frame.length != 3 + len + 3) return false;
+
+    // CRC24Q 계산 (header + data, CRC 제외)
+    int crc = 0;
+    for (int i = 0; i < 3 + len; i++) {
+      crc ^= (frame[i] << 16);
+      for (int j = 0; j < 8; j++) {
+        crc <<= 1;
+        if (crc & 0x1000000 != 0) {
+          crc ^= 0x1864CFB;
+        }
+      }
+    }
+    crc &= 0xFFFFFF;
+
+    // 프레임 끝 3바이트와 비교
+    final frameCrc = (frame[3 + len] << 16) | (frame[3 + len + 1] << 8) | frame[3 + len + 2];
+    return crc == frameCrc;
+  }
 
   GnssConnectionState get connectionState => _connectionState;
   String? get deviceName => _deviceName;
@@ -148,8 +176,12 @@ class BluetoothGnssService extends ChangeNotifier {
         },
       );
 
-      // listen 등록 후 초기화 명령 전송 (응답을 받을 수 있도록)
-      await _sendInitCommands();
+      // listen 등록 후 초기화 명령 전송 (skipInit이면 건너뜀)
+      if (initMode == InitMode.skipInit) {
+        fileLogger?.call('[BT] === skipInit 모드: 초기화 명령 건너뜀 ===');
+      } else {
+        await _sendInitCommands();
+      }
 
     } catch (e) {
       debugPrint('[GNSS] 연결 실패: $e');
@@ -196,12 +228,15 @@ class BluetoothGnssService extends ChangeNotifier {
           return;
         }
 
-        // 바이너리 프레임 로그
+        // 바이너리 프레임 로그 + 초기화 응답 감지
         final frameLen = endIdx - i;
         final hex = _binBuffer.sublist(i, min(i + 20, endIdx))
             .map((b) => b.toRadixString(16).padLeft(2, '0'))
             .join(' ');
         fileLogger?.call('[BT] BIN-RX ${frameLen}B: [$hex...]');
+
+        // i70 응답 감지 → 초기화 응답 플래그 세팅
+        _initResponseReceived = true;
 
         i = endIdx;
         textStart = endIdx;
@@ -395,47 +430,76 @@ class BluetoothGnssService extends ChangeNotifier {
     return Uint8List.fromList(frame);
   }
 
-  /// BT 연결 직후 초기화 — btsnoop 캡처 시퀀스 재생 (50ms 간격, 응답 대기 없음)
-  /// TerraStar 타이밍: ~50ms 간격으로 fire-and-forget
-  /// 시퀀스 번호는 캡처 데이터 그대로 사용 (재번호 없음)
+  /// BT 연결 직후 초기화 — btsnoop 캡처 시퀀스 재생
+  /// 핵심 SET 명령은 응답 대기 (최대 500ms), 나머지는 50ms 간격
+  /// 핵심 SET: 03,11(correction input) / 04,30(correction port) / 03,20(diff mode) / 04,5a(IO source)
   Future<void> _sendInitCommands() async {
     if (_connection == null) return;
 
     final cmds = ChcnavInitData.getCommands(initMode);
-    fileLogger?.call('[BT] === i70 초기화 시작 (${initMode.name}: ${cmds.length}개, 50ms간격, 응답대기없음) ===');
+    fileLogger?.call('[BT] === i70 초기화 시작 (${initMode.name}: ${cmds.length}개, SET응답대기) ===');
+
+    // 핵심 SET 명령 서브커맨드 목록 (bytes[24-25])
+    const keyCmds = {
+      0x0311, // correction input mode
+      0x0430, // correction port
+      0x0320, // differential mode
+      0x045a, // IO source enable
+      0x0454, // RTCM format
+      0x0451, // IO mapping
+      0x0410, // port config
+    };
+
+    _initResponseReceived = false;
+    int seqCounter = 1; // 시퀀스 번호 1부터 시작 (테라에스 패턴)
 
     for (int i = 0; i < cmds.length; i++) {
       if (_connection == null || _connectionState != GnssConnectionState.connected) break;
       final cmd = Uint8List.fromList(cmds[i]);
+      // 시퀀스 번호를 증가시켜서 설정 (byte[3])
+      if (cmd.length > 3) {
+        cmd[3] = seqCounter & 0xFF;
+        seqCounter++;
+      }
       final seq = cmd.length > 3 ? cmd[3] : i;
 
+      // 서브커맨드 추출 (bytes 24-25)
+      final subCmd = cmd.length >= 26 ? (cmd[24] << 8) | cmd[25] : 0;
+      final isKeyCmd = keyCmds.contains(subCmd);
+
       try {
+        _initResponseReceived = false;
         _connection!.output.add(cmd);
 
-        // 처음 5개와 마지막 3개는 hex dump 로그
-        if (i < 5 || i >= cmds.length - 3) {
-          final hex = cmd.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-          fileLogger?.call('[BT-HEX] INIT#$i seq=0x${seq.toRadixString(16)} SENT ${cmd.length}B: $hex');
-        } else if (i % 10 == 0) {
-          fileLogger?.call('[BT] INIT#$i/${cmds.length} seq=0x${seq.toRadixString(16)} (${cmd.length}B)');
-        }
+        // 모든 init 명령 로그
+        final keyTag = isKeyCmd ? ' [KEY-SET]' : '';
+        final subcmdStr = cmd.length >= 26 ? '(${cmd[24].toRadixString(16)},${cmd[25].toRadixString(16)})' : '';
+        fileLogger?.call('[BT] INIT#$i/${ cmds.length} seq=0x${seq.toRadixString(16)}$keyTag $subcmdStr ${cmd.length}B');
       } catch (e) {
         fileLogger?.call('[BT] 초기화 #$i 전송 실패: $e');
       }
 
-      // TerraStar 타이밍: 50ms 간격
-      await Future.delayed(const Duration(milliseconds: 50));
-    }
-
-    // 초기화 명령의 마지막 시퀀스 번호를 추출하여 _chcSeq 동기화
-    // 마지막 명령의 Byte[3]이 시퀀스 번호
-    if (cmds.isNotEmpty) {
-      final lastCmd = cmds.last;
-      if (lastCmd.length > 3) {
-        _chcSeq = (lastCmd[3] + 1) & 0xFF;
-        fileLogger?.call('[BT] 시퀀스 동기화: 마지막 init seq=0x${lastCmd[3].toRadixString(16)} → 다음 _chcSeq=0x${_chcSeq.toRadixString(16)}');
+      if (isKeyCmd) {
+        // 핵심 SET 명령: 응답 대기 (최대 500ms, 50ms 폴링)
+        for (int w = 0; w < 10; w++) {
+          await Future.delayed(const Duration(milliseconds: 50));
+          if (_initResponseReceived) {
+            fileLogger?.call('[BT] INIT#$i KEY-SET 응답 수신 (${(w+1)*50}ms)');
+            break;
+          }
+        }
+        if (!_initResponseReceived) {
+          fileLogger?.call('[BT] INIT#$i KEY-SET 응답 타임아웃 (500ms)');
+        }
+      } else {
+        // 일반 명령: 50ms 간격
+        await Future.delayed(const Duration(milliseconds: 50));
       }
     }
+
+    // 초기화에서 사용한 seqCounter로 _chcSeq 동기화
+    _chcSeq = seqCounter & 0xFF;
+    fileLogger?.call('[BT] 시퀀스 동기화: init 마지막 seq=${seqCounter-1} → RTCM _chcSeq=$_chcSeq');
 
     try {
       await _connection!.output.allSent;
@@ -529,7 +593,7 @@ class BluetoothGnssService extends ChangeNotifier {
   }
 
   /// RTCM3 프레임(D3 헤더) 파싱 → 개별 CHCNav 래핑 전송
-  void _parseAndSendRtcmFrames() {
+  Future<void> _parseAndSendRtcmFrames() async {
     _rtcmFlushTimer?.cancel();
 
     int offset = 0;
@@ -558,9 +622,20 @@ class BluetoothGnssService extends ChangeNotifier {
         _rtcmBuffer.sublist(offset, offset + frameSize),
       );
 
+      // CRC24Q 검증
+      final crcOk = _verifyCrc24q(rtcmFrame);
+      if (!crcOk) {
+        _rtcmCrcErrors++;
+        fileLogger?.call('[BT] RTCM CRC24Q 실패! type:$msgType ${rtcmFrame.length}B (누적 에러:$_rtcmCrcErrors)');
+        offset += frameSize;
+        continue;
+      }
+
       try {
         final sentData = _wrapRtcmInChcFrame(rtcmFrame);
         _connection!.output.add(sentData);
+        // 프레임 단위 flush — i70이 RFCOMM 패킷 경계에서 파싱하도록
+        await _connection!.output.allSent;
 
         _rtcmBytesSent += rtcmFrame.length;
         _rtcmSendCount++;

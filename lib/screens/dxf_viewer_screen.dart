@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -166,6 +167,9 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   // GPS 정보 패널 표시 여부
   bool _showInfoPanel = false;
 
+  // 횡단면도 ZIP 데이터: { "NO.34" : ["횡단면도_NO34_0_0.dxf", ...], "NO.34+10" : [...] }
+  Map<String, List<({String filename, List<int> bytes})>> _crossSectionMap = {};
+
   // 줌 배율 프리뷰 모드
   bool _zoomPreviewMode = false;
   double _previewZoom = 1.0;
@@ -220,11 +224,145 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
     } catch (_) {}
   }
 
+  /// 횡단면도 ZIP 로드 및 측점별 매핑
+  Future<void> _loadCrossSectionZip() async {
+    try {
+      final data = await rootBundle.load('assets/DXF/횡단면도.zip');
+      final archive = ZipDecoder().decodeBytes(data.buffer.asUint8List());
+      final map = <String, List<({String filename, List<int> bytes})>>{};
+
+      for (final file in archive) {
+        if (file.isFile && file.name.endsWith('.dxf')) {
+          // CP949 → 한글 디코딩
+          final rawBytes = file.name.codeUnits.map((c) => c & 0xFF).toList();
+          String decoded;
+          try {
+            decoded = _decodeCp949(rawBytes);
+          } catch (_) {
+            decoded = file.name;
+          }
+
+          // 파일명에서 측점 추출: 횡단면도_NO34_10_0.dxf → NO.34+10
+          final match = RegExp(r'NO(\d+)_(\d+)_(\d+)\.dxf', caseSensitive: false).firstMatch(decoded);
+          if (match == null) continue;
+          final baseNo = int.parse(match.group(1)!);
+          final plus = int.parse(match.group(2)!);
+          final decimal = int.parse(match.group(3)!);
+
+          String stationNo;
+          if (plus == 0 && decimal == 0) {
+            stationNo = 'NO.$baseNo';
+          } else if (decimal == 0) {
+            stationNo = 'NO.$baseNo+$plus';
+          } else {
+            stationNo = 'NO.$baseNo+$plus.$decimal';
+          }
+
+          final entry = (filename: decoded, bytes: file.content as List<int>);
+          map.putIfAbsent(stationNo, () => []).add(entry);
+        }
+      }
+
+      setState(() => _crossSectionMap = map);
+      debugPrint('[횡단면도] ${map.length}개 측점 매핑 완료 (총 ${archive.length}개 파일)');
+    } catch (e) {
+      debugPrint('[횡단면도] ZIP 로드 실패: $e');
+    }
+  }
+
+  /// CP949 바이트 → 한글 문자열 변환 (간이)
+  String _decodeCp949(List<int> bytes) {
+    // dart:convert에는 CP949 디코더가 없으므로 파일명 매칭에만 쓸 ASCII 부분 추출
+    // 실제 한글 부분은 무시하고 _NO 이후만 사용
+    final sb = StringBuffer();
+    int i = 0;
+    while (i < bytes.length) {
+      if (bytes[i] < 0x80) {
+        sb.writeCharCode(bytes[i]);
+        i++;
+      } else if (i + 1 < bytes.length) {
+        sb.write('?'); // 한글 2바이트 → ? 치환
+        i += 2;
+      } else {
+        i++;
+      }
+    }
+    return sb.toString();
+  }
+
+  /// 횡단면도 컨텍스트 메뉴 표시
+  void _showCrossSectionMenu(StationData station) {
+    final files = _crossSectionMap[station.no];
+    if (files == null || files.isEmpty) return;
+
+    if (files.length == 1) {
+      // 파일이 하나면 바로 열기
+      _openCrossSection(station.no, files.first);
+      return;
+    }
+
+    // 여러 파일이면 선택 다이얼로그
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.grey[900],
+        title: Text('횡단면도 - ${station.no}', style: const TextStyle(color: Colors.white, fontSize: 16)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: files.map((f) {
+            final displayName = f.filename.replaceAll('횡단면도_', '').replaceAll('.dxf', '').replaceAll('?', '');
+            return ListTile(
+              dense: true,
+              title: Text(displayName, style: const TextStyle(color: Colors.white70)),
+              leading: const Icon(Icons.insert_drive_file, color: Colors.orange, size: 18),
+              onTap: () {
+                Navigator.pop(ctx);
+                _openCrossSection(station.no, f);
+              },
+            );
+          }).toList(),
+        ),
+      ),
+    );
+  }
+
+  /// 횡단면도 DXF를 새 화면에서 열기
+  void _openCrossSection(String stationNo, ({String filename, List<int> bytes}) file) {
+    // DXF 파싱
+    String content;
+    try {
+      content = utf8.decode(file.bytes, allowMalformed: true);
+    } catch (_) {
+      // CP949 fallback
+      content = String.fromCharCodes(file.bytes);
+    }
+
+    final dxfData = DxfService.parseDxfContent(content);
+    if (dxfData == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('횡단면도 파싱 실패: ${file.filename}')),
+      );
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _CrossSectionViewerScreen(
+          stationNo: stationNo,
+          filename: file.filename,
+          dxfData: dxfData,
+        ),
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
     _loadSampleDxf();
     _loadAutoZoomLevels();
+    _loadCrossSectionZip();
     _gnssService.addListener(_onGnssUpdate);
     _ntripService.addListener(_onNtripUpdate);
     _ntripService.loadConfig();
@@ -574,6 +712,18 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   onTap: () {
                     Navigator.pop(ctx);
                     _gnssService.initMode = InitMode.init99;
+                    _connectGps();
+                  },
+                ),
+              // GPS 연결 (skipInit - 테라에스 후 테스트용)
+              if (!isConnected && !isConnecting)
+                ListTile(
+                  leading: const Icon(Icons.bluetooth_searching, color: Colors.red),
+                  title: const Text('GPS skipInit', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('초기화 없이 연결 (테라에스 설정 유지)', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _gnssService.initMode = InitMode.skipInit;
                     _connectGps();
                   },
                 ),
@@ -6906,11 +7056,16 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                     children: _baseStationsWithCoords.map((station) {
                       final isSelected = _selectedStation?.no == station.no;
                       final label = _shortStationNo(station.no);
+                      final hasCrossSection = _crossSectionMap.containsKey(station.no);
                       return GestureDetector(
                         onTap: () {
                           _goToStation(station);
                           setState(() => _showStationPanel = false);
                         },
+                        onLongPress: hasCrossSection ? () {
+                          setState(() => _showStationPanel = false);
+                          _showCrossSectionMenu(station);
+                        } : null,
                         child: Container(
                           width: 40,
                           height: 32,
@@ -6918,6 +7073,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                           decoration: BoxDecoration(
                             color: isSelected ? Colors.cyan : Colors.grey[300],
                             borderRadius: BorderRadius.circular(4),
+                            border: hasCrossSection ? Border.all(color: Colors.orange, width: 1.5) : null,
                           ),
                           child: Text(
                             label,
@@ -8166,4 +8322,334 @@ class _FenceSelectPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _FenceSelectPainter old) => true;
+}
+
+/// 횡단면도 DXF 뷰어 화면
+class _CrossSectionViewerScreen extends StatefulWidget {
+  final String stationNo;
+  final String filename;
+  final Map<String, dynamic> dxfData;
+
+  const _CrossSectionViewerScreen({
+    required this.stationNo,
+    required this.filename,
+    required this.dxfData,
+  });
+
+  @override
+  State<_CrossSectionViewerScreen> createState() => _CrossSectionViewerScreenState();
+}
+
+class _CrossSectionViewerScreenState extends State<_CrossSectionViewerScreen> {
+  double _zoom = 1.0;
+  Offset _offset = Offset.zero;
+  Offset _lastFocalPoint = Offset.zero;
+  double _lastZoom = 1.0;
+  final Set<String> _hiddenLayers = {};
+
+  @override
+  void initState() {
+    super.initState();
+    // 초기 화면에 맞추기는 build에서 처리
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final entities = widget.dxfData['entities'] as List? ?? [];
+    final layers = (widget.dxfData['layers'] as List?)?.cast<String>() ?? [];
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.grey[900],
+        title: Text('횡단면도 ${widget.stationNo}', style: const TextStyle(fontSize: 16)),
+        actions: [
+          // 레이어 토글
+          IconButton(
+            icon: const Icon(Icons.layers, size: 20),
+            onPressed: () => _showLayerDialog(layers),
+          ),
+          // 전체 보기
+          IconButton(
+            icon: const Icon(Icons.fit_screen, size: 20),
+            onPressed: () => setState(() {
+              _zoom = 1.0;
+              _offset = Offset.zero;
+            }),
+          ),
+        ],
+      ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          return GestureDetector(
+            onScaleStart: (d) {
+              _lastFocalPoint = d.focalPoint;
+              _lastZoom = _zoom;
+            },
+            onScaleUpdate: (d) {
+              setState(() {
+                if (d.pointerCount >= 2) {
+                  _zoom = (_lastZoom * d.scale).clamp(0.1, 500.0);
+                }
+                _offset += d.focalPoint - _lastFocalPoint;
+                _lastFocalPoint = d.focalPoint;
+              });
+            },
+            child: CustomPaint(
+              size: Size(constraints.maxWidth, constraints.maxHeight),
+              painter: _CrossSectionPainter(
+                entities: entities,
+                zoom: _zoom,
+                offset: _offset,
+                canvasSize: Size(constraints.maxWidth, constraints.maxHeight),
+                hiddenLayers: _hiddenLayers,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showLayerDialog(List<String> layers) {
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          backgroundColor: Colors.grey[900],
+          title: const Text('레이어', style: TextStyle(color: Colors.white, fontSize: 14)),
+          content: SizedBox(
+            width: 280,
+            height: 400,
+            child: ListView.builder(
+              itemCount: layers.length,
+              itemBuilder: (_, i) {
+                final layer = layers[i];
+                final visible = !_hiddenLayers.contains(layer);
+                return CheckboxListTile(
+                  dense: true,
+                  title: Text(layer, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                  value: visible,
+                  onChanged: (v) {
+                    setDlgState(() {
+                      if (v == true) {
+                        _hiddenLayers.remove(layer);
+                      } else {
+                        _hiddenLayers.add(layer);
+                      }
+                    });
+                    setState(() {});
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 횡단면도 페인터
+class _CrossSectionPainter extends CustomPainter {
+  final List entities;
+  final double zoom;
+  final Offset offset;
+  final Size canvasSize;
+  final Set<String> hiddenLayers;
+
+  _CrossSectionPainter({
+    required this.entities,
+    required this.zoom,
+    required this.offset,
+    required this.canvasSize,
+    required this.hiddenLayers,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (entities.isEmpty) return;
+
+    // 전체 범위 계산
+    double minX = double.infinity, minY = double.infinity;
+    double maxX = -double.infinity, maxY = -double.infinity;
+
+    for (final e in entities) {
+      final layer = e['layer']?.toString() ?? '';
+      if (hiddenLayers.contains(layer)) continue;
+      _updateBounds(e, (x, y) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      });
+    }
+
+    if (minX == double.infinity) return;
+
+    final dxfW = maxX - minX;
+    final dxfH = maxY - minY;
+    if (dxfW <= 0 || dxfH <= 0) return;
+
+    // 자동 스케일
+    final margin = 20.0;
+    final scaleX = (size.width - margin * 2) / dxfW;
+    final scaleY = (size.height - margin * 2) / dxfH;
+    final baseScale = scaleX < scaleY ? scaleX : scaleY;
+    final scale = baseScale * zoom;
+
+    final cx = size.width / 2 + offset.dx;
+    final cy = size.height / 2 + offset.dy;
+    final dxfCx = (minX + maxX) / 2;
+    final dxfCy = (minY + maxY) / 2;
+
+    Offset toScreen(double x, double y) {
+      return Offset(
+        cx + (x - dxfCx) * scale,
+        cy - (y - dxfCy) * scale,
+      );
+    }
+
+    // 엔티티 렌더링
+    for (final e in entities) {
+      final layer = e['layer']?.toString() ?? '';
+      if (hiddenLayers.contains(layer)) continue;
+      final type = e['type']?.toString() ?? '';
+      final colorVal = e['color'] as int? ?? 7;
+      final color = _dxfColor(colorVal);
+      final paint = Paint()
+        ..color = color
+        ..strokeWidth = 1.0
+        ..style = PaintingStyle.stroke;
+
+      switch (type) {
+        case 'LINE':
+          final p1 = toScreen(
+            (e['start_x'] as num?)?.toDouble() ?? 0,
+            (e['start_y'] as num?)?.toDouble() ?? 0,
+          );
+          final p2 = toScreen(
+            (e['end_x'] as num?)?.toDouble() ?? 0,
+            (e['end_y'] as num?)?.toDouble() ?? 0,
+          );
+          canvas.drawLine(p1, p2, paint);
+          break;
+
+        case 'LWPOLYLINE':
+        case 'POLYLINE':
+          final vertices = e['vertices'] as List? ?? [];
+          if (vertices.length < 2) break;
+          final path = Path();
+          for (int i = 0; i < vertices.length; i++) {
+            final v = vertices[i];
+            final p = toScreen(
+              (v['x'] as num?)?.toDouble() ?? 0,
+              (v['y'] as num?)?.toDouble() ?? 0,
+            );
+            if (i == 0) path.moveTo(p.dx, p.dy);
+            else path.lineTo(p.dx, p.dy);
+          }
+          if (e['closed'] == true) path.close();
+          canvas.drawPath(path, paint);
+          break;
+
+        case 'CIRCLE':
+          final c = toScreen(
+            (e['center_x'] as num?)?.toDouble() ?? 0,
+            (e['center_y'] as num?)?.toDouble() ?? 0,
+          );
+          final r = ((e['radius'] as num?)?.toDouble() ?? 0) * scale;
+          if (r > 0.5) canvas.drawCircle(c, r, paint);
+          break;
+
+        case 'ARC':
+          final c = toScreen(
+            (e['center_x'] as num?)?.toDouble() ?? 0,
+            (e['center_y'] as num?)?.toDouble() ?? 0,
+          );
+          final r = ((e['radius'] as num?)?.toDouble() ?? 0) * scale;
+          if (r < 0.5) break;
+          final startAngle = ((e['start_angle'] as num?)?.toDouble() ?? 0) * pi / 180;
+          final endAngle = ((e['end_angle'] as num?)?.toDouble() ?? 0) * pi / 180;
+          var sweep = endAngle - startAngle;
+          if (sweep <= 0) sweep += 2 * pi;
+          canvas.drawArc(
+            Rect.fromCircle(center: c, radius: r),
+            -startAngle - sweep, sweep, false, paint,
+          );
+          break;
+
+        case 'TEXT':
+        case 'MTEXT':
+          final p = toScreen(
+            (e['x'] as num?)?.toDouble() ?? (e['insert_x'] as num?)?.toDouble() ?? 0,
+            (e['y'] as num?)?.toDouble() ?? (e['insert_y'] as num?)?.toDouble() ?? 0,
+          );
+          final text = e['text']?.toString() ?? '';
+          final h = ((e['height'] as num?)?.toDouble() ?? 2.0) * scale;
+          if (h < 3 || text.isEmpty) break;
+          final tp = TextPainter(
+            text: TextSpan(text: text, style: TextStyle(color: color, fontSize: h.clamp(6.0, 40.0))),
+            textDirection: TextDirection.ltr,
+          )..layout();
+          tp.paint(canvas, p);
+          break;
+
+        case 'POINT':
+          final p = toScreen(
+            (e['x'] as num?)?.toDouble() ?? 0,
+            (e['y'] as num?)?.toDouble() ?? 0,
+          );
+          canvas.drawCircle(p, 2, paint..style = PaintingStyle.fill);
+          break;
+      }
+    }
+  }
+
+  void _updateBounds(Map<String, dynamic> e, void Function(double x, double y) update) {
+    final type = e['type']?.toString() ?? '';
+    switch (type) {
+      case 'LINE':
+        update((e['start_x'] as num?)?.toDouble() ?? 0, (e['start_y'] as num?)?.toDouble() ?? 0);
+        update((e['end_x'] as num?)?.toDouble() ?? 0, (e['end_y'] as num?)?.toDouble() ?? 0);
+        break;
+      case 'LWPOLYLINE':
+      case 'POLYLINE':
+        for (final v in (e['vertices'] as List? ?? [])) {
+          update((v['x'] as num?)?.toDouble() ?? 0, (v['y'] as num?)?.toDouble() ?? 0);
+        }
+        break;
+      case 'CIRCLE':
+      case 'ARC':
+        final cx = (e['center_x'] as num?)?.toDouble() ?? 0;
+        final cy = (e['center_y'] as num?)?.toDouble() ?? 0;
+        final r = (e['radius'] as num?)?.toDouble() ?? 0;
+        update(cx - r, cy - r);
+        update(cx + r, cy + r);
+        break;
+      case 'TEXT':
+      case 'MTEXT':
+        update((e['x'] as num?)?.toDouble() ?? (e['insert_x'] as num?)?.toDouble() ?? 0,
+               (e['y'] as num?)?.toDouble() ?? (e['insert_y'] as num?)?.toDouble() ?? 0);
+        break;
+      case 'POINT':
+        update((e['x'] as num?)?.toDouble() ?? 0, (e['y'] as num?)?.toDouble() ?? 0);
+        break;
+    }
+  }
+
+  Color _dxfColor(int colorIndex) {
+    const colors = [
+      0xFF000000, 0xFFFF0000, 0xFFFFFF00, 0xFF00FF00, 0xFF00FFFF,
+      0xFF0000FF, 0xFFFF00FF, 0xFFFFFFFF, 0xFF808080, 0xFFC0C0C0,
+    ];
+    if (colorIndex >= 0 && colorIndex < colors.length) {
+      return Color(colors[colorIndex]);
+    }
+    return const Color(0xFFFFFFFF);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CrossSectionPainter old) =>
+      zoom != old.zoom || offset != old.offset || hiddenLayers.length != old.hiddenLayers.length;
 }

@@ -129,12 +129,19 @@ class NtripService extends ChangeNotifier {
       }
 
       if (_logFilePath != null) {
-        final file = File(_logFilePath!);
-        _logSink = file.openWrite(mode: FileMode.write);
-        final ts = DateTime.now();
-        _logSink!.writeln('\n========== 세션 시작 ${ts.toString()} ==========');
-        await _logSink!.flush();
-        debugPrint('[NTRIP] 로그파일: $_logFilePath');
+        try {
+          final file = File(_logFilePath!);
+          _logSink = file.openWrite(mode: FileMode.write);
+          final ts = DateTime.now();
+          _logSink!.writeln('\n========== 세션 시작 ${ts.toString()} ==========');
+          await _logSink!.flush();
+          debugPrint('[NTRIP] 로그파일: $_logFilePath');
+        } catch (e) {
+          debugPrint('[NTRIP] Download 로그 실패 (무시): $e');
+          _logSink = null;
+          // 앱 내부 디렉토리만 사용
+          _logFilePath = _internalLogPath;
+        }
       }
     } catch (e) {
       debugPrint('[NTRIP] 로그파일 초기화 실패: $e');
@@ -159,13 +166,12 @@ class NtripService extends ChangeNotifier {
 
   /// 양쪽 로그 파일에 기록 + 주기적 flush
   void _writeLine(String line) {
-    _logSink?.writeln(line);
-    _internalLogSink?.writeln(line);
+    try { _logSink?.writeln(line); } catch (_) {}
+    try { _internalLogSink?.writeln(line); } catch (_) {}
     _logLineCount++;
-    // 100줄마다 flush (hex dump가 많으므로)
     if (_logLineCount % 100 == 0) {
-      _logSink?.flush();
-      _internalLogSink?.flush();
+      try { _logSink?.flush(); } catch (_) {}
+      try { _internalLogSink?.flush(); } catch (_) {}
     }
   }
 
@@ -288,9 +294,6 @@ class NtripService extends ChangeNotifier {
     _bytesReceived = 0;
     notifyListeners();
 
-    // 연결 전에 설정 저장 (실패해도 다음에 불러옴)
-    await config.save();
-
     _log('마운트포인트: ${config.mountPoint}');
     _log('계정: ${config.username} / ${config.password.replaceAll(RegExp(r'.'), '*')}');
 
@@ -342,14 +345,16 @@ class NtripService extends ChangeNotifier {
           if (!headerParsed) {
             headerBuffer.addAll(data);
             final headerStr = utf8.decode(headerBuffer, allowMalformed: true);
-            _log('서버 응답 수신 (${headerBuffer.length}바이트)');
+            _log('서버 응답 수신 (${data.length}B, 누적 ${headerBuffer.length}B)');
 
             // 첫 줄 추출
             final firstLineEnd = headerStr.indexOf('\r\n');
             final firstLine = firstLineEnd >= 0
                 ? headerStr.substring(0, firstLineEnd).trim()
                 : headerStr.trim();
-            _log('첫 응답줄: "$firstLine"');
+            if (firstLine.isNotEmpty) {
+              _log('첫 응답줄: "$firstLine"');
+            }
             // 401 디버깅: 전체 응답 헤더 로그
             if (firstLine.contains('401') || firstLine.contains('403')) {
               _log('전체 응답: $headerStr');
@@ -367,9 +372,16 @@ class NtripService extends ChangeNotifier {
             } else if (headerEnd1 >= 0) {
               bodyStart = headerEnd1 + 2;
               _log('NTRIP 1.0 헤더 종료 감지 (bodyStart=$bodyStart)');
+            } else if (firstLine.contains('200') && headerBuffer.length > 100) {
+              // 200 OK인데 \r\n\r\n이 안 온 경우 강제 진행
+              bodyStart = headerBuffer.length;
+              _log('200 OK 감지, 헤더 종료 마커 없이 강제 진행 (bodyStart=$bodyStart)');
             } else if (headerBuffer.length > 512) {
               bodyStart = 0;
               _log('헤더 타임아웃 강제 파싱');
+            } else {
+              _log('헤더 미완성, 추가 데이터 대기 중... (${headerBuffer.length}B)');
+              return;  // 더 기다림
             }
 
             if (bodyStart >= 0) {
