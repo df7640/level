@@ -96,7 +96,7 @@ class BluetoothGnssService extends ChangeNotifier {
       crc ^= (frame[i] << 16);
       for (int j = 0; j < 8; j++) {
         crc <<= 1;
-        if (crc & 0x1000000 != 0) {
+        if ((crc & 0x1000000) != 0) {
           crc ^= 0x1864CFB;
         }
       }
@@ -423,7 +423,7 @@ class BluetoothGnssService extends ChangeNotifier {
       0x00, 0x00,             // [28-29] padding
       (rtcmLen >> 8) & 0xFF, rtcmLen & 0xFF, // [30-31] RTCM frame length (BE)
       ...rtcmData,            // [32+] raw RTCM3 data
-      0x00, 0x00, 0x00, 0x00, // 4 trailing bytes
+      0x61, 0x5f, 0x5f, 0x00, // 4 trailing bytes (테라에스 캡처 값)
       0x09, 0x24, 0x0D, 0x0A, // terminator
     ];
 
@@ -579,8 +579,8 @@ class BluetoothGnssService extends ChangeNotifier {
   int get rtcmSendCount => _rtcmSendCount;
   int get rtcmFlushErrors => _rtcmFlushErrors;
 
-  /// RTCM 보정 데이터 수신 → RTCM3 프레임 파싱 → 개별 CHCNav 래핑 전송
-  /// 테라에스처럼 RTCM3 프레임 단위로 개별 래핑하여 전송 (배치 X)
+  /// RTCM 보정 데이터 수신 → 배치로 모아서 하나의 CHCNav 래퍼로 전송
+  /// 테라에스처럼 여러 RTCM 프레임을 하나의 HCNP 메시지에 배치
   void sendRtcm(Uint8List data) {
     if (_connection == null || _connectionState != GnssConnectionState.connected) {
       debugPrint('[GNSS] RTCM 전송 불가 - BT 미연결 (${_connectionState.name})');
@@ -592,73 +592,167 @@ class BluetoothGnssService extends ChangeNotifier {
     _parseAndSendRtcmFrames();
   }
 
-  /// RTCM3 프레임(D3 헤더) 파싱 → 개별 CHCNav 래핑 전송
+  /// RTCM3 프레임 파싱 → 유효 프레임만 모아서 배치 래핑 전송
   Future<void> _parseAndSendRtcmFrames() async {
     _rtcmFlushTimer?.cancel();
 
+    // 1단계: 유효한 RTCM 프레임들을 모두 추출
+    final validFrames = <Uint8List>[];
     int offset = 0;
+
     while (offset < _rtcmBuffer.length) {
-      // D3 헤더 찾기
       if (_rtcmBuffer[offset] != 0xD3) {
         offset++;
         continue;
       }
 
-      // 최소 6바이트 필요 (D3 + len(2) + msgType(2) + ... + CRC(3))
       if (offset + 6 > _rtcmBuffer.length) break;
 
       final rtcmLen = ((_rtcmBuffer[offset + 1] & 0x03) << 8) | _rtcmBuffer[offset + 2];
-      final frameSize = 3 + rtcmLen + 3; // header(3) + data(rtcmLen) + CRC(3)
+      final frameSize = 3 + rtcmLen + 3;
 
-      // 프레임이 아직 완성되지 않았으면 대기
       if (offset + frameSize > _rtcmBuffer.length) break;
 
-      // 메시지 타입 추출
       final msgType = ((_rtcmBuffer[offset + 3] & 0xFF) << 4) |
                        ((_rtcmBuffer[offset + 4] & 0xF0) >> 4);
 
-      // 개별 RTCM3 프레임 추출
       final rtcmFrame = Uint8List.fromList(
         _rtcmBuffer.sublist(offset, offset + frameSize),
       );
 
       // CRC24Q 검증
-      final crcOk = _verifyCrc24q(rtcmFrame);
-      if (!crcOk) {
+      if (!_verifyCrc24q(rtcmFrame)) {
         _rtcmCrcErrors++;
-        fileLogger?.call('[BT] RTCM CRC24Q 실패! type:$msgType ${rtcmFrame.length}B (누적 에러:$_rtcmCrcErrors)');
+        fileLogger?.call('[BT] RTCM CRC24Q 실패! type:$msgType ${rtcmFrame.length}B (에러:$_rtcmCrcErrors)');
         offset += frameSize;
         continue;
       }
 
-      try {
-        final sentData = _wrapRtcmInChcFrame(rtcmFrame);
-        _connection!.output.add(sentData);
-        // 프레임 단위 flush — i70이 RFCOMM 패킷 경계에서 파싱하도록
-        await _connection!.output.allSent;
-
-        _rtcmBytesSent += rtcmFrame.length;
-        _rtcmSendCount++;
-
-        // 처음 20개는 전체 hex dump (테라에스 캡처와 비교용)
-        if (_rtcmSendCount <= 20) {
-          final fullHex = sentData.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-          fileLogger?.call('[BT-HEX] RTCM#$_rtcmSendCount type:$msgType SENT ${sentData.length}B: $fullHex');
-        } else if (_rtcmSendCount % 10 == 0) {
-          final errInfo = _rtcmFlushErrors > 0 ? ' err:$_rtcmFlushErrors' : '';
-          fileLogger?.call('[BT] RTCM#$_rtcmSendCount type:$msgType ${rtcmFrame.length}B 누적:${(_rtcmBytesSent / 1024).toStringAsFixed(1)}KB$errInfo');
-        }
-      } catch (e) {
-        _rtcmFlushErrors++;
-        fileLogger?.call('[BT] RTCM 전송 실패 type:$msgType: $e');
-      }
-
+      validFrames.add(rtcmFrame);
       offset += frameSize;
     }
 
-    // 처리된 데이터 제거, 잔여 데이터 보관
+    // 처리된 데이터 제거
     if (offset > 0) {
       _rtcmBuffer.removeRange(0, offset);
+    }
+
+    if (validFrames.isEmpty) return;
+
+    // 2단계: 모든 유효 프레임을 하나의 CHCNav 래퍼로 배치 + 분할 전송
+    // 테라에스는 큰 RTCM 배치를 byte[4]=0xFA 연속 프레임으로 분할 전송
+    try {
+      final allRtcm = <int>[];
+      for (final frame in validFrames) {
+        allRtcm.addAll(frame);
+      }
+      final rtcmData = Uint8List.fromList(allRtcm);
+
+      // CHCNav 래퍼 구성 (헤더 32B + RTCM + trailing 4B + terminator 4B)
+      final rtcmLen = rtcmData.length;
+      final innerLen = 14 + rtcmLen;
+      final blockLen = rtcmLen + 4;
+      final header = <int>[
+        0x24, 0x24, 0x01, 0x00, // [0-3] magic + dir + seq(placeholder)
+        0x00,                    // [4] len(placeholder)
+        0x04, 0x11,              // [5-6] protocol
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [7-14]
+        0x01,                    // [15]
+        (innerLen >> 8) & 0xFF, innerLen & 0xFF, // [16-17]
+        0x00, 0x01, 0x00, 0x02,  // [18-21]
+        0x00, 0x32, 0x15, 0x04,  // [22-25] RTCM relay
+        (blockLen >> 8) & 0xFF, blockLen & 0xFF, // [26-27]
+        0x00, 0x00,              // [28-29]
+        (rtcmLen >> 8) & 0xFF, rtcmLen & 0xFF, // [30-31]
+      ];
+      final payload = <int>[...header, ...rtcmData, 0x00, 0x00, 0x00, 0x00];
+      final terminator = <int>[0x09, 0x24, 0x0D, 0x0A];
+
+      // 전체 메시지 = payload + terminator
+      final fullMessage = <int>[...payload, ...terminator];
+      final totalSize = fullMessage.length;
+
+      if (totalSize <= 257) {
+        // 작은 메시지: 단일 프레임 전송
+        final seq = _chcSeq++ & 0xFF;
+        fullMessage[3] = seq;
+        fullMessage[4] = (totalSize - 7) & 0xFF;
+        final sentData = Uint8List.fromList(fullMessage);
+        _connection!.output.add(sentData);
+        await _connection!.output.allSent;
+      } else {
+        // 큰 메시지: 분할 전송 (테라에스 0xFA continuation 프로토콜)
+        // 첫 프레임: 헤더 포함, byte[4]=0xFA, 끝에 0D 0A
+        // 중간 프레임: 24 24 01 [seq] FA [data...] 0D 0A
+        // 마지막 프레임: 24 24 01 [seq] [len] [data... 09 24 0D 0A]
+        const maxChunkData = 250; // byte[4] max = 0xFA
+        int dataOffset = 0;
+        bool isFirst = true;
+        int fragmentCount = 0;
+
+        while (dataOffset < payload.length) {
+          final seq = _chcSeq++ & 0xFF;
+          final isLast = (dataOffset + maxChunkData) >= payload.length;
+
+          if (isFirst) {
+            // 첫 프레임: 전체 헤더 시작, byte[4]=0xFA
+            final chunkEnd = min(dataOffset + maxChunkData, payload.length);
+            final chunk = payload.sublist(dataOffset, chunkEnd);
+            chunk[3] = seq;
+            chunk[4] = 0xFA; // continuation marker
+            final frame = <int>[...chunk];
+            if (isLast) {
+              frame.addAll(terminator);
+            } else {
+              frame.addAll([0x0D, 0x0A]); // CRLF between fragments
+            }
+            _connection!.output.add(Uint8List.fromList(frame));
+            dataOffset = chunkEnd;
+            isFirst = false;
+          } else if (isLast) {
+            // 마지막 프레임
+            final chunk = payload.sublist(dataOffset);
+            final lastPayload = <int>[...chunk, ...terminator];
+            final frame = <int>[
+              0x24, 0x24, 0x01, seq,
+              min(lastPayload.length + 3, 0xF9), // last frame length
+              ...lastPayload,
+            ];
+            _connection!.output.add(Uint8List.fromList(frame));
+            dataOffset = payload.length;
+          } else {
+            // 중간 프레임: 24 24 01 [seq] FA [data] 0D 0A
+            final chunkEnd = min(dataOffset + maxChunkData - 5, payload.length); // 5 byte header overhead
+            final chunk = payload.sublist(dataOffset, chunkEnd);
+            final frame = <int>[
+              0x24, 0x24, 0x01, seq, 0xFA,
+              ...chunk,
+              0x0D, 0x0A,
+            ];
+            _connection!.output.add(Uint8List.fromList(frame));
+            dataOffset = chunkEnd;
+          }
+          fragmentCount++;
+          await _connection!.output.allSent;
+        }
+
+        if (_rtcmSendCount <= 3) {
+          fileLogger?.call('[BT] FRAGMENTED: ${fragmentCount}frags ${totalSize}B total');
+        }
+      }
+
+      _rtcmBytesSent += rtcmData.length;
+      _rtcmSendCount++;
+
+      if (_rtcmSendCount <= 5) {
+        fileLogger?.call('[BT-HEX] BATCH#$_rtcmSendCount ${validFrames.length}frames ${totalSize}B (rtcm:${rtcmData.length}B)');
+      } else if (_rtcmSendCount % 10 == 0) {
+        final errInfo = _rtcmFlushErrors > 0 ? ' err:$_rtcmFlushErrors' : '';
+        fileLogger?.call('[BT] BATCH#$_rtcmSendCount ${validFrames.length}frames ${rtcmData.length}B 누적:${(_rtcmBytesSent / 1024).toStringAsFixed(1)}KB$errInfo');
+      }
+    } catch (e) {
+      _rtcmFlushErrors++;
+      fileLogger?.call('[BT] RTCM 분할전송 실패: $e');
     }
 
     // 잔여 데이터가 있으면 다음 수신 시 합쳐서 처리 (타임아웃으로 폐기 방지)
