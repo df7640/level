@@ -78,7 +78,6 @@ class BluetoothGnssService extends ChangeNotifier {
   int _chcSeq = 0;
 
   // RTCM 전송 모드: true=RAW, false=CHCNav 래퍼
-  bool useRawRtcm = false;
 
   GnssConnectionState get connectionState => _connectionState;
   String? get deviceName => _deviceName;
@@ -402,50 +401,48 @@ class BluetoothGnssService extends ChangeNotifier {
     }
   }
 
-  /// CHCNav RTCM 래퍼: RTCM3 데이터를 CHCNav 바이너리 프레임으로 감싸기
-  /// 테라에스 캡처 기반 프레임 형식:
-  ///   [0-1]  24 24          magic $$
-  ///   [2]    01             direction (request)
-  ///   [3]    seq            sequence number
-  ///   [4]    msgLen         메시지 길이 (Byte5 ~ 터미네이터 앞까지)
-  ///   [5-6]  04 11          protocol ID
-  ///   [7-14] 00 x8          zeros
-  ///   [15]   01             constant
-  ///   [16-17] payloadLen    (BE) = rtcmLen + 14
-  ///   [18-21] 00 01 00 02   constants
-  ///   [22-25] 00 32 15 04   sub-command: RTCM relay
-  ///   [26-27] dataRegionLen (BE) = rtcmLen + 4
-  ///   [28-29] 00 00         padding
-  ///   [30-31] rtcmLen       (BE) = RTCM 데이터 길이
-  ///   [32+]  RTCM data      raw RTCM3 data (D3...)
-  ///   [last4] 09 24 0D 0A   terminator
+  /// CHCNav RTCM 래퍼: RTCM3 데이터를 HCNP 비즈니스 패킷으로 감싸기
+  /// TerrAs BT Snoop 캡처 기반 (2026-03-17, 1164프레임 분석)
+  ///
+  /// 전송 프레임: [24 24 01] [seq] [chunkLen] [비즈니스패킷] [0D 0A]
+  /// 비즈니스 패킷: [04 11] [00] [cmdID:4B=0] [seq:4B=1] [blocksLen:2B] [blocks] [09 24]
+  /// Block 1: [00 01] [00 02] [00 32]  — 제어블록 (ID=0x0001, data=0x0032)
+  /// Block 2: [15 04] [len:2B] [RTCM]  — RTCM 페이로드
   Uint8List _wrapRtcmInChcFrame(Uint8List rtcmData) {
     final rtcmLen = rtcmData.length;
-    final dataRegionLen = rtcmLen + 4;   // rtcmLen(2) + 00 00(2)
-    final payloadLen = rtcmLen + 14;     // sub-cmd header(10) + dataRegionLen(2) + 00 00(2) + rtcmLen(2) = 14
-    final seq = _chcSeq++ & 0xFF;
-    // Byte[4]: min(payloadLen + 19, 0xFA) — 테라에스 캡처에서 역산한 공식
-    final msgLen = (payloadLen + 19) < 0xFA ? (payloadLen + 19) : 0xFA;
+    // Block1: ID(2) + len(2) + data(2) = 6B
+    // Block2: ID(2) + len(2) + rtcmData = 4 + rtcmLen
+    final blocksLen = 10 + rtcmLen;
 
-    final frame = <int>[
-      0x24, 0x24,           // [0-1] magic $$
-      0x01,                 // [2] direction: request
-      seq,                  // [3] sequence number
-      msgLen,               // [4] 메시지 길이 (0xFA 고정값이 아닌 실제 계산값)
-      0x04, 0x11,           // [5-6] protocol ID
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [7-14] zeros
-      0x01,                 // [15] constant
-      (payloadLen >> 8) & 0xFF, payloadLen & 0xFF, // [16-17] payload length (BE)
-      0x00, 0x01, 0x00, 0x02, // [18-21] constants
-      0x00, 0x32, 0x15, 0x04, // [22-25] sub-command: RTCM relay
-      (dataRegionLen >> 8) & 0xFF, dataRegionLen & 0xFF, // [26-27] data region length (BE)
-      0x00, 0x00,             // [28-29] padding
-      (rtcmLen >> 8) & 0xFF, rtcmLen & 0xFF, // [30-31] RTCM length (BE)
-      ...rtcmData,            // [32+] raw RTCM3 data
-      0x09, 0x24, 0x0D, 0x0A, // terminator
+    // 비즈니스 패킷 조립
+    final businessPacket = <int>[
+      0x04, 0x11,                                          // 매직
+      0x00,                                                // 예약
+      0x00, 0x00, 0x00, 0x00,                              // cmdID=0 (고정, TerrAs 확인)
+      0x00, 0x00, 0x00, 0x01,                              // seq=1 (고정, TerrAs 확인)
+      (blocksLen >> 8) & 0xFF, blocksLen & 0xFF,           // blocksLen (BE)
+      // Block 1: 제어 블록 (TerrAs BT Snoop: ID=0x0001, data=00 32)
+      0x00, 0x01,                                          // block ID (BE)
+      0x00, 0x02,                                          // block data len=2 (BE)
+      0x00, 0x32,                                          // block data
+      // Block 2: RTCM 페이로드
+      0x15, 0x04,                                          // block ID (BE)
+      (rtcmLen >> 8) & 0xFF, rtcmLen & 0xFF,               // block data len (BE)
+      ...rtcmData,                                         // RTCM 바이너리
+      // 테일
+      0x09, 0x24,                                          // 테일 매직
     ];
 
-    return Uint8List.fromList(frame);
+    // 전송 프레임 래핑
+    final seq = _chcSeq;
+    _chcSeq = (_chcSeq + 1) % 0xFB; // 0~250 순환 (TerrAs 패턴)
+    final chunkLen = min(businessPacket.length, 0xFA);
+
+    return Uint8List.fromList([
+      0x24, 0x24, 0x01, seq, chunkLen,
+      ...businessPacket,
+      0x0D, 0x0A,
+    ]);
   }
 
   // 응답 대기용 Completer
@@ -514,7 +511,7 @@ class BluetoothGnssService extends ChangeNotifier {
 
     try {
       await _connection!.output.allSent;
-      fileLogger?.call('[BT] === i70 초기화 완료 (RTCM: ${useRawRtcm ? "RAW" : "래퍼"}, nextSeq=$_chcSeq) ===');
+      fileLogger?.call('[BT] === i70 초기화 완료 (HCNP RTCM, nextSeq=$_chcSeq) ===');
     } catch (e) {
       fileLogger?.call('[BT] 초기화 flush 실패: $e');
     }
@@ -634,12 +631,7 @@ class BluetoothGnssService extends ChangeNotifier {
       );
 
       try {
-        final Uint8List sentData;
-        if (useRawRtcm) {
-          sentData = rtcmFrame;
-        } else {
-          sentData = _wrapRtcmInChcFrame(rtcmFrame);
-        }
+        final sentData = _wrapRtcmInChcFrame(rtcmFrame);
         _connection!.output.add(sentData);
 
         _rtcmBytesSent += rtcmFrame.length;

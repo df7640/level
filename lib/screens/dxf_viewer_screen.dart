@@ -502,6 +502,7 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
   void _showGpsMenu() {
     final isConnected = _gnssService.connectionState == GnssConnectionState.connected;
     final isConnecting = _gnssService.connectionState == GnssConnectionState.connecting;
+    final isError = _gnssService.connectionState == GnssConnectionState.error;
 
     showModalBottomSheet(
       context: context,
@@ -525,32 +526,30 @@ class _DxfViewerScreenState extends State<DxfViewerScreen> {
                   ),
                 ),
               ),
-              // GPS 연결 (CHCNav 래퍼)
-              if (!isConnected && !isConnecting)
+              // GPS 연결
+              if (!isConnected && !isConnecting && !isError)
                 ListTile(
                   leading: const Icon(Icons.bluetooth_searching, color: Colors.blue),
-                  title: const Text('GPS 연결 (래퍼)', style: TextStyle(color: Colors.white)),
-                  subtitle: const Text('테라에스 초기화 + RTCM 래퍼', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  title: const Text('GPS 연결', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('TerrAs 초기화 + HCNP RTCM', style: TextStyle(color: Colors.white38, fontSize: 12)),
                   onTap: () {
                     Navigator.pop(ctx);
-                    _gnssService.useRawRtcm = false;
                     _connectGps();
                   },
                 ),
-              // GPS 연결 (RAW RTCM)
-              if (!isConnected && !isConnecting)
+              // GPS 연결 (skipInit)
+              if (!isConnected && !isConnecting && !isError)
                 ListTile(
                   leading: const Icon(Icons.bluetooth_searching, color: Colors.orange),
-                  title: const Text('GPS 연결 (RAW)', style: TextStyle(color: Colors.white)),
-                  subtitle: const Text('테라에스 초기화 + RAW RTCM', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                  title: const Text('GPS 연결 (skipInit)', style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('초기화 없이 연결', style: TextStyle(color: Colors.white38, fontSize: 12)),
                   onTap: () {
                     Navigator.pop(ctx);
-                    _gnssService.useRawRtcm = true;
-                    _connectGps();
+                    _showBluetoothDeviceDialog(skipInit: true);
                   },
                 ),
               // GPS 연결 끊기
-              if (isConnected || isConnecting)
+              if (isConnected || isConnecting || isError)
                 ListTile(
                   leading: const Icon(Icons.bluetooth_disabled, color: Colors.red),
                   title: Text(
