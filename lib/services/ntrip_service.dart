@@ -129,12 +129,19 @@ class NtripService extends ChangeNotifier {
       }
 
       if (_logFilePath != null) {
-        final file = File(_logFilePath!);
-        _logSink = file.openWrite(mode: FileMode.write);
-        final ts = DateTime.now();
-        _logSink!.writeln('\n========== 세션 시작 ${ts.toString()} ==========');
-        await _logSink!.flush();
-        debugPrint('[NTRIP] 로그파일: $_logFilePath');
+        try {
+          final file = File(_logFilePath!);
+          _logSink = file.openWrite(mode: FileMode.write);
+          final ts = DateTime.now();
+          _logSink!.writeln('\n========== 세션 시작 ${ts.toString()} ==========');
+          await _logSink!.flush();
+          debugPrint('[NTRIP] 로그파일: $_logFilePath');
+        } catch (e) {
+          debugPrint('[NTRIP] Download 로그 실패 (무시): $e');
+          _logSink = null;
+          // 앱 내부 디렉토리만 사용
+          _logFilePath = _internalLogPath;
+        }
       }
     } catch (e) {
       debugPrint('[NTRIP] 로그파일 초기화 실패: $e');
@@ -159,13 +166,12 @@ class NtripService extends ChangeNotifier {
 
   /// 양쪽 로그 파일에 기록 + 주기적 flush
   void _writeLine(String line) {
-    _logSink?.writeln(line);
-    _internalLogSink?.writeln(line);
+    try { _logSink?.writeln(line); } catch (_) {}
+    try { _internalLogSink?.writeln(line); } catch (_) {}
     _logLineCount++;
-    // 100줄마다 flush (hex dump가 많으므로)
     if (_logLineCount % 100 == 0) {
-      _logSink?.flush();
-      _internalLogSink?.flush();
+      try { _logSink?.flush(); } catch (_) {}
+      try { _internalLogSink?.flush(); } catch (_) {}
     }
   }
 
@@ -203,7 +209,7 @@ class NtripService extends ChangeNotifier {
         final request = 'GET / HTTP/1.1\r\n'
             'Host: $host\r\n'
             'Ntrip-Version: Ntrip/2.0\r\n'
-            'User-Agent: NTRIP LongitudinalViewer/1.0\r\n'
+            'User-Agent: NTRIP CHC_LandStar/1.0\r\n'
             'Authorization: Basic $credentials\r\n'
             '\r\n';
         socket.add(utf8.encode(request));
@@ -275,20 +281,18 @@ class NtripService extends ChangeNotifier {
 
   /// NTRIP 서버 연결
   Future<void> connect(NtripConfig config) async {
-    if (_state == NtripState.connecting || _state == NtripState.connected) {
-      await disconnect();
-    }
+    // 이전 연결 강제 정리
+    _reconnectTimer?.cancel();
+    _stopGgaSender();
+    try { _socket?.destroy(); } catch (_) {}
+    _socket = null;
 
     _config = config;
     _shouldAutoReconnect = true;
-    _reconnectTimer?.cancel();
     _state = NtripState.connecting;
     _errorMessage = null;
     _bytesReceived = 0;
     notifyListeners();
-
-    // 연결 전에 설정 저장 (실패해도 다음에 불러옴)
-    await config.save();
 
     _log('마운트포인트: ${config.mountPoint}');
     _log('계정: ${config.username} / ${config.password.replaceAll(RegExp(r'.'), '*')}');
@@ -324,13 +328,14 @@ class NtripService extends ChangeNotifier {
       final request = 'GET /${config.mountPoint} HTTP/1.1\r\n'
           'Host: $connectedHost\r\n'
           'Ntrip-Version: Ntrip/2.0\r\n'
-          'User-Agent: NTRIP LongitudinalViewer/1.0\r\n'
+          'User-Agent: NTRIP CHC_LandStar/1.0\r\n'
           'Authorization: Basic $credentials\r\n'
           'Accept: */*\r\n'
           '\r\n';
 
       _socket!.add(utf8.encode(request));
       _log('HTTP 요청 전송 완료');
+      _log('요청: GET /${config.mountPoint} Auth=${credentials.substring(0, 8)}...');
 
       bool headerParsed = false;
       final headerBuffer = <int>[];
@@ -340,14 +345,20 @@ class NtripService extends ChangeNotifier {
           if (!headerParsed) {
             headerBuffer.addAll(data);
             final headerStr = utf8.decode(headerBuffer, allowMalformed: true);
-            _log('서버 응답 수신 (${headerBuffer.length}바이트)');
+            _log('서버 응답 수신 (${data.length}B, 누적 ${headerBuffer.length}B)');
 
             // 첫 줄 추출
             final firstLineEnd = headerStr.indexOf('\r\n');
             final firstLine = firstLineEnd >= 0
                 ? headerStr.substring(0, firstLineEnd).trim()
                 : headerStr.trim();
-            _log('첫 응답줄: "$firstLine"');
+            if (firstLine.isNotEmpty) {
+              _log('첫 응답줄: "$firstLine"');
+            }
+            // 401 디버깅: 전체 응답 헤더 로그
+            if (firstLine.contains('401') || firstLine.contains('403')) {
+              _log('전체 응답: $headerStr');
+            }
 
             // NTRIP 1.0 (ICY 200 OK) vs NTRIP 2.0 (HTTP/1.1 200 OK)
             final isNtrip1Ok = firstLine.contains('ICY 200');
@@ -361,9 +372,16 @@ class NtripService extends ChangeNotifier {
             } else if (headerEnd1 >= 0) {
               bodyStart = headerEnd1 + 2;
               _log('NTRIP 1.0 헤더 종료 감지 (bodyStart=$bodyStart)');
+            } else if (firstLine.contains('200') && headerBuffer.length > 100) {
+              // 200 OK인데 \r\n\r\n이 안 온 경우 강제 진행
+              bodyStart = headerBuffer.length;
+              _log('200 OK 감지, 헤더 종료 마커 없이 강제 진행 (bodyStart=$bodyStart)');
             } else if (headerBuffer.length > 512) {
               bodyStart = 0;
               _log('헤더 타임아웃 강제 파싱');
+            } else {
+              _log('헤더 미완성, 추가 데이터 대기 중... (${headerBuffer.length}B)');
+              return;  // 더 기다림
             }
 
             if (bodyStart >= 0) {
@@ -420,6 +438,10 @@ class NtripService extends ChangeNotifier {
               }
             }
           } else {
+            // 데이터 수신 로그 (처음 10회)
+            if (_rtcmPacketCount < 10 || _rtcmPacketCount % 50 == 0) {
+              _log('소켓 데이터 ${data.length}B (chunked=$_isChunked, total=${_bytesReceived}B, packets=$_rtcmPacketCount)');
+            }
             if (_isChunked) {
               _handleChunkedData(data);
             } else {
@@ -608,7 +630,7 @@ class NtripService extends ChangeNotifier {
   void _sendGga() {
     if (_socket == null || _state != NtripState.connected) return;
     if (_lastGga == null || _lastGga!.isEmpty) {
-      if (_ggaSendCount % 5 == 0) _log('GGA 미수신 - GPS 연결 확인 필요');
+      _log('GGA 미수신 - GPS 연결 확인 필요 (count=$_ggaSendCount)');
       _ggaSendCount++;
       return;
     }
@@ -616,8 +638,8 @@ class NtripService extends ChangeNotifier {
       _socket!.add(utf8.encode('${_lastGga!}\r\n'));
       _ggaSendCount++;
 
-      // 5초에 한 번만 로그 (1초 전송이지만 로그 과다 방지)
-      if (_ggaSendCount % 5 == 0) {
+      // 처음 5회는 매번 로그, 이후 5초마다
+      if (_ggaSendCount <= 5 || _ggaSendCount % 5 == 0) {
         final parts = _lastGga!.split(',');
         final fixQ = parts.length > 6 ? parts[6] : '?';
         final sats = parts.length > 7 ? parts[7] : '?';
