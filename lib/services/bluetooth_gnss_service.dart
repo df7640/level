@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'nmea_parser.dart';
 import 'coordinate_service.dart';
@@ -62,8 +63,10 @@ class BluetoothGnssService extends ChangeNotifier {
   final NmeaParser _parser = NmeaParser();
   String _buffer = '';
 
+
   /// 외부 파일 로거 (NtripService의 _log와 공유)
   void Function(String msg)? fileLogger;
+
 
   // 위치 유무와 관계없이 항상 업데이트되는 상태값
   int _satellites = 0;
@@ -410,24 +413,27 @@ class BluetoothGnssService extends ChangeNotifier {
   /// Block 2: [15 04] [len:2B] [RTCM]  — RTCM 페이로드
   Uint8List _wrapRtcmInChcFrame(Uint8List rtcmData) {
     final rtcmLen = rtcmData.length;
+    final blockLen = rtcmLen + 4;  // block_len = rtcm_len + 4 (00 00 + rtcm_len fields)
     // Block1: ID(2) + len(2) + data(2) = 6B
-    // Block2: ID(2) + len(2) + rtcmData = 4 + rtcmLen
-    final blocksLen = 10 + rtcmLen;
+    // Block2: ID(2) + len(2) + 00 00(2) + rtcm_len(2) + rtcmData = 8 + rtcmLen
+    final blocksLen = 14 + rtcmLen;
 
-    // 비즈니스 패킷 조립
+    // 비즈니스 패킷 조립 (TerraStar btsnoop 2026-03-24 완벽 일치)
     final businessPacket = <int>[
       0x04, 0x11,                                          // 매직
       0x00,                                                // 예약
-      0x00, 0x00, 0x00, 0x00,                              // cmdID=0 (고정, TerrAs 확인)
-      0x00, 0x00, 0x00, 0x01,                              // seq=1 (고정, TerrAs 확인)
+      0x00, 0x00, 0x00, 0x00,                              // cmdID=0
+      0x00, 0x00, 0x00, 0x01,                              // seq=1
       (blocksLen >> 8) & 0xFF, blocksLen & 0xFF,           // blocksLen (BE)
-      // Block 1: 제어 블록 (TerrAs BT Snoop: ID=0x0001, data=00 32)
+      // Block 1: 제어 블록
       0x00, 0x01,                                          // block ID (BE)
       0x00, 0x02,                                          // block data len=2 (BE)
       0x00, 0x32,                                          // block data
-      // Block 2: RTCM 페이로드
+      // Block 2: RTCM 페이로드 — [15 04] [block_len] [00 00] [rtcm_len] [D3...]
       0x15, 0x04,                                          // block ID (BE)
-      (rtcmLen >> 8) & 0xFF, rtcmLen & 0xFF,               // block data len (BE)
+      (blockLen >> 8) & 0xFF, blockLen & 0xFF,             // block data len (= rtcmLen+4)
+      0x00, 0x00,                                          // padding
+      (rtcmLen >> 8) & 0xFF, rtcmLen & 0xFF,               // RTCM frame len (BE)
       ...rtcmData,                                         // RTCM 바이너리
       // 테일
       0x09, 0x24,                                          // 테일 매직
@@ -456,7 +462,7 @@ class BluetoothGnssService extends ChangeNotifier {
   }
 
   /// 바이너리 명령 전송 후 응답 대기 (타임아웃 포함)
-  Future<void> _sendAndWaitResponse(Uint8List cmd, int index, {int timeoutMs = 500}) async {
+  Future<void> _sendAndWaitResponse(Uint8List cmd, int index, {int timeoutMs = 100}) async {
     if (_connection == null) return;
 
     _responseCompleter = Completer<void>();
@@ -484,30 +490,26 @@ class BluetoothGnssService extends ChangeNotifier {
   Future<void> _sendInitCommands() async {
     if (_connection == null) return;
 
-    fileLogger?.call('[BT] === i70 테라에스 초기화 시작 (${chcnavInitCommands.length}개, 응답대기) ===');
+    final cmds = ChcnavInitData.getCommands(InitMode.init59);
+    fileLogger?.call('[BT] === i70 초기화 시작 (init59: ${cmds.length}개, 응답대기) ===');
 
-    for (int i = 0; i < chcnavInitCommands.length; i++) {
+    int seqCounter = 1;
+    for (int i = 0; i < cmds.length; i++) {
       if (_connection == null || _connectionState != GnssConnectionState.connected) break;
-      final cmd = Uint8List.fromList(chcnavInitCommands[i]);
-      final seq = cmd.length > 3 ? cmd[3] : i;
+      final cmd = Uint8List.fromList(cmds[i]);
+      // seq 번호 할당
+      if (cmd.length > 3) cmd[3] = seqCounter & 0xFF;
+      seqCounter++;
 
       await _sendAndWaitResponse(cmd, i + 1);
 
-      if (i < 5 || i % 10 == 0 || i >= chcnavInitCommands.length - 3) {
-        fileLogger?.call('[BT] 초기화 #${i + 1}/${chcnavInitCommands.length} seq=0x${seq.toRadixString(16)} (${cmd.length}B) 완료');
+      if (i < 5 || i % 10 == 0 || i >= cmds.length - 3) {
+        fileLogger?.call('[BT] 초기화 #${i + 1}/${cmds.length} seq=0x${cmd[3].toRadixString(16)} (${cmd.length}B) 완료');
       }
     }
 
-    // 초기화 명령의 마지막 시퀀스 번호를 추출하여 _chcSeq 동기화
-    // chcnavInitCommands는 하드코딩된 바이트이므로 _chcSeq가 증가하지 않음
-    // 마지막 명령의 Byte[3]이 시퀀스 번호
-    if (chcnavInitCommands.isNotEmpty) {
-      final lastCmd = chcnavInitCommands.last;
-      if (lastCmd.length > 3) {
-        _chcSeq = (lastCmd[3] + 1) & 0xFF;
-        fileLogger?.call('[BT] 시퀀스 동기화: 마지막 init seq=${lastCmd[3]} → 다음 _chcSeq=$_chcSeq');
-      }
-    }
+    _chcSeq = seqCounter;
+    fileLogger?.call('[BT] 시퀀스 동기화: 다음 _chcSeq=$_chcSeq');
 
     try {
       await _connection!.output.allSent;
@@ -515,6 +517,7 @@ class BluetoothGnssService extends ChangeNotifier {
     } catch (e) {
       fileLogger?.call('[BT] 초기화 flush 실패: $e');
     }
+
   }
 
   /// i70 수신기 내부 NTRIP 클라이언트 설정
@@ -601,7 +604,7 @@ class BluetoothGnssService extends ChangeNotifier {
   }
 
   /// RTCM3 프레임(D3 헤더) 파싱 → 개별 CHCNav 래핑 전송
-  void _parseAndSendRtcmFrames() {
+  Future<void> _parseAndSendRtcmFrames() async {
     _rtcmFlushTimer?.cancel();
 
     int offset = 0;
@@ -637,7 +640,6 @@ class BluetoothGnssService extends ChangeNotifier {
         _rtcmBytesSent += rtcmFrame.length;
         _rtcmSendCount++;
 
-        // 처음 20개는 전체 hex dump (테라에스 캡처와 비교용)
         if (_rtcmSendCount <= 20) {
           final fullHex = sentData.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
           fileLogger?.call('[BT-HEX] RTCM#$_rtcmSendCount type:$msgType SENT ${sentData.length}B: $fullHex');
